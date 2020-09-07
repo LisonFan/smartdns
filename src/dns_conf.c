@@ -50,6 +50,7 @@ int dns_conf_cachesize = DEFAULT_DNS_CACHE_SIZE;
 int dns_conf_prefetch = 0;
 int dns_conf_serve_expired = 0;
 int dns_conf_serve_expired_ttl = 0;
+int dns_conf_serve_expired_reply_ttl = 5;
 
 /* upstream servers */
 struct dns_servers dns_conf_servers[DNS_MAX_SERVERS];
@@ -71,6 +72,9 @@ int dns_conf_log_num = 8;
 /* CA file */
 char dns_conf_ca_file[DNS_MAX_PATH];
 char dns_conf_ca_path[DNS_MAX_PATH];
+
+char dns_conf_cache_file[DNS_MAX_PATH];
+int dns_conf_cache_persist = 2;
 
 /* auditing */
 int dns_conf_audit_enable = 0;
@@ -106,6 +110,10 @@ static int _get_domain(char *value, char *domain, int max_dmain_size, char **ptr
 	char *begin = NULL;
 	char *end = NULL;
 	int len = 0;
+
+	if (value == NULL || domain == NULL) {
+		goto errout;
+	}
 
 	/* first field */
 	begin = strstr(value, "/");
@@ -1354,9 +1362,12 @@ static struct config_item _config_item[] = {
 	CONF_CUSTOM("speed-check-mode", _config_speed_check_mode, NULL),
 	CONF_INT("tcp-idle-time", &dns_conf_tcp_idle_time, 0, 3600),
 	CONF_INT("cache-size", &dns_conf_cachesize, 0, CONF_INT_MAX),
+	CONF_STRING("cache-file", (char *)&dns_conf_cache_file, DNS_MAX_PATH),
+	CONF_YESNO("cache-persist", &dns_conf_cache_persist),
 	CONF_YESNO("prefetch-domain", &dns_conf_prefetch),
 	CONF_YESNO("serve-expired", &dns_conf_serve_expired),
 	CONF_INT("serve-expired-ttl", &dns_conf_serve_expired_ttl, 0, CONF_INT_MAX),
+	CONF_INT("serve-expired-reply-ttl", &dns_conf_serve_expired_reply_ttl, 0, CONF_INT_MAX),
 	CONF_YESNO("dualstack-ip-selection", &dns_conf_dualstack_ip_selection),
 	CONF_INT("dualstack-ip-selection-threshold", &dns_conf_dualstack_ip_selection_threshold, 0, 1000),
 	CONF_CUSTOM("log-level", _config_log_level, NULL),
