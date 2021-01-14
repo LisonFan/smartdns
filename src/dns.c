@@ -940,7 +940,7 @@ static int _dns_decode_domain(struct dns_context *context, char *output, int siz
 
 	/*[len]string[len]string...[0]0 */
 	while (1) {
-		if (ptr > context->data + context->maxsize || ptr < context->data || output_len >= size - 1 || ptr_jump > 4) {
+		if (ptr >= context->data + context->maxsize || ptr < context->data || output_len >= size - 1 || ptr_jump > 4) {
 			return -1;
 		}
 
@@ -1363,7 +1363,7 @@ static int _dns_decode_opt_ecs(struct dns_context *context, struct dns_opt_ecs *
 	len = (ecs->source_prefix / 8);
 	len += (ecs->source_prefix % 8 > 0) ? 1 : 0;
 
-	if (_dns_left_len(context) < len) {
+	if (_dns_left_len(context) < len || len > sizeof(ecs->addr)) {
 		return -1;
 	}
 
