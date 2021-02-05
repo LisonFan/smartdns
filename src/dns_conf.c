@@ -516,6 +516,7 @@ static int _config_domain_rule_flag_set(char *domain, unsigned int flag, unsigne
 	/* add new rule to domain */
 	if (domain_rule->rules[DOMAIN_RULE_FLAGS] == NULL) {
 		rule_flags = malloc(sizeof(*rule_flags));
+		memset(rule_flags, 0, sizeof(*rule_flags));
 		rule_flags->flags = 0;
 		domain_rule->rules[DOMAIN_RULE_FLAGS] = rule_flags;
 	}
@@ -1454,8 +1455,14 @@ int config_addtional_file(void *data, int argc, char *argv[])
 	if (conf_file[0] != '/') {
 		safe_strncpy(file_path_dir, conf_get_conf_file(), DNS_MAX_PATH);
 		dirname(file_path_dir);
-		if (snprintf(file_path, DNS_MAX_PATH, "%s/%s", file_path_dir, conf_file) < 0) {
-			return -1;
+		if (strncmp(file_path_dir, conf_get_conf_file(), sizeof(file_path_dir)) == 0) {
+			if (snprintf(file_path, DNS_MAX_PATH, "%s", conf_file) < 0) {
+				return -1;
+			}
+		} else {
+			if (snprintf(file_path, DNS_MAX_PATH, "%s/%s", file_path_dir, conf_file) < 0) {
+				return -1;
+			}
 		}
 	} else {
 		safe_strncpy(file_path, conf_file, DNS_MAX_PATH);
