@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <linux/capability.h>
+#include <linux/limits.h>
 #include <linux/netlink.h>
 #include <netinet/tcp.h>
 #include <openssl/crypto.h>
@@ -76,7 +77,7 @@
 
 #define NETLINK_ALIGN(len) (((len) + 3) & ~(3))
 
-#define BUFF_SZ 256
+#define BUFF_SZ 1024
 
 struct ipset_netlink_attr {
 	unsigned short len;
@@ -132,7 +133,7 @@ errout:
 	return NULL;
 }
 
-int getaddr_by_host(char *host, struct sockaddr *addr, socklen_t *addr_len)
+int getaddr_by_host(const char *host, struct sockaddr *addr, socklen_t *addr_len)
 {
 	struct addrinfo hints;
 	struct addrinfo *result = NULL;
@@ -472,6 +473,31 @@ char *reverse_string(char *output, const char *input, int len, int to_lower_case
 	return begin;
 }
 
+char *to_lower_case(char *output, const char *input, int len)
+{
+	char *begin = output;
+	int i = 0;
+	if (len <= 0) {
+		*output = 0;
+		return output;
+	}
+
+	len--;
+	while (i < len && *(input + i) != '\0') {
+		*output = *(input + i);
+		if (*output >= 'A' && *output <= 'Z') {
+			/* To lower case */
+			*output = *output + 32;
+		}
+		output++;
+		i++;
+	}
+
+	*output = 0;
+
+	return begin;
+}
+
 static inline void _ipset_add_attr(struct nlmsghdr *netlink_head, uint16_t type, size_t len, const void *data)
 {
 	struct ipset_netlink_attr *attr = (void *)netlink_head + NETLINK_ALIGN(netlink_head->nlmsg_len);
@@ -517,6 +543,7 @@ static int _ipset_operate(const char *ipsetname, const unsigned char addr[], int
 	ssize_t rc;
 	int af = 0;
 	static const struct sockaddr_nl snl = {.nl_family = AF_NETLINK};
+	uint32_t expire;
 
 	if (addr_len != IPV4_ADDR_LEN && addr_len != IPV6_ADDR_LEN) {
 		errno = EINVAL;
@@ -571,8 +598,8 @@ static int _ipset_operate(const char *ipsetname, const unsigned char addr[], int
 	nested[1]->len = (void *)buffer + NETLINK_ALIGN(netlink_head->nlmsg_len) - (void *)nested[1];
 
 	if (timeout > 0 && _ipset_support_timeout(ipsetname) == 0) {
-		timeout = htonl(timeout);
-		_ipset_add_attr(netlink_head, IPSET_ATTR_TIMEOUT | NLA_F_NET_BYTEORDER, sizeof(timeout), &timeout);
+		expire = htonl(timeout);
+		_ipset_add_attr(netlink_head, IPSET_ATTR_TIMEOUT | NLA_F_NET_BYTEORDER, sizeof(expire), &expire);
 	}
 
 	nested[0]->len = (void *)buffer + NETLINK_ALIGN(netlink_head->nlmsg_len) - (void *)nested[0];
@@ -607,15 +634,22 @@ int ipset_del(const char *ipsetname, const unsigned char addr[], int addr_len)
 
 unsigned char *SSL_SHA256(const unsigned char *d, size_t n, unsigned char *md)
 {
-	SHA256_CTX c;
 	static unsigned char m[SHA256_DIGEST_LENGTH];
 
 	if (md == NULL)
 		md = m;
-	SHA256_Init(&c);
-	SHA256_Update(&c, d, n);
-	SHA256_Final(md, &c);
-	OPENSSL_cleanse(&c, sizeof(c));
+
+	EVP_MD_CTX* ctx = EVP_MD_CTX_create();
+	if (ctx == NULL) {
+		return NULL;
+	}
+
+	EVP_MD_CTX_init(ctx);
+	EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+	EVP_DigestUpdate(ctx, d, n);
+	EVP_DigestFinal_ex(ctx, m, NULL);
+	EVP_MD_CTX_destroy(ctx);
+
 	return (md);
 }
 
@@ -736,7 +770,11 @@ void SSL_CRYPTO_thread_setup(void)
 		pthread_mutex_init(&(lock_cs[i]), NULL);
 	}
 
+#if OPENSSL_API_COMPAT < 0x10000000
 	CRYPTO_set_id_callback(_pthreads_thread_id);
+#else
+	CRYPTO_THREADID_set_callback(_pthreads_thread_id);
+#endif
 	CRYPTO_set_locking_callback(_pthreads_locking_callback);
 }
 
@@ -972,6 +1010,25 @@ int has_network_raw_cap(void)
 	return 1;
 }
 
+int has_unprivileged_ping(void)
+{
+	int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
+	if (fd < 0) {
+		return 0;
+	}
+
+	close(fd);
+
+	fd = socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+	if (fd < 0) {
+		return 0;
+	}
+
+	close(fd);
+
+	return 1;
+}
+
 int set_sock_keepalive(int fd, int keepidle, int keepinterval, int keepcnt)
 {
 	const int yes = 1;
@@ -1036,6 +1093,7 @@ void print_stack(void)
 {
 	const size_t max_buffer = 30;
 	void *buffer[max_buffer];
+	int idx = 0;
 
 	struct backtrace_state state = {buffer, buffer + max_buffer};
 	_Unwind_Backtrace(unwind_callback, &state);
@@ -1045,7 +1103,7 @@ void print_stack(void)
 	}
 	
 	tlog(TLOG_FATAL, "Stack:");
-	for (int idx = 0; idx < frame_num; ++idx) {
+	for (idx = 0; idx < frame_num; ++idx) {
 		const void *addr = buffer[idx];
 		const char *symbol = "";
 
@@ -1058,4 +1116,26 @@ void print_stack(void)
 		void *offset = (void *)((char *)(addr) - (char *)(info.dli_fbase));
 		tlog(TLOG_FATAL, "#%.2d: %p %s from %s+%p", idx + 1, addr, symbol, info.dli_fname, offset);
 	}
+}
+
+int write_file(const char *filename, void *data, int data_len)
+{
+	int fd = open(filename, O_WRONLY|O_CREAT, 0644);
+	if (fd < 0) {
+		return -1;
+	}
+
+	int len = write(fd, data, data_len);
+	if (len < 0) {
+		goto errout;
+	}
+
+	close(fd);
+	return 0;
+errout:
+	if (fd > 0) {
+		close(fd);
+	}
+
+	return -1;
 }

@@ -49,7 +49,7 @@ unsigned long get_tick_count(void);
 
 char *gethost_by_addr(char *host, int maxsize, struct sockaddr *addr);
 
-int getaddr_by_host(char *host, struct sockaddr *addr, socklen_t *addr_len);
+int getaddr_by_host(const char *host, struct sockaddr *addr, socklen_t *addr_len);
 
 int getsocknet_inet(int fd, struct sockaddr *addr, socklen_t *addr_len);
 
@@ -64,6 +64,8 @@ int parse_uri(char *value, char *scheme, char *host, int *port, char *path);
 int set_fd_nonblock(int fd, int nonblock);
 
 char *reverse_string(char *output, const char *input, int len, int to_lower_case);
+
+char *to_lower_case(char *output, const char *input, int len);
 
 void print_stack(void);
 
@@ -102,6 +104,8 @@ int is_numeric(const char *str);
 
 int has_network_raw_cap(void);
 
+int has_unprivileged_ping(void);
+
 int set_sock_keepalive(int fd, int keepidle, int keepinterval, int keepcnt);
 
 int set_sock_lingertime(int fd, int time);
@@ -109,6 +113,8 @@ int set_sock_lingertime(int fd, int time);
 uint64_t get_free_space(const char *path);
 
 void print_stack(void);
+
+int write_file(const char *filename, void *data, int data_len);
 
 #ifdef __cplusplus
 }

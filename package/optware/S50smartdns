@@ -339,7 +339,7 @@ case "$1" in
 		SLEEP="sleep"
 		SLEEPTIME=0.2
 	fi
-	N=30
+	N=300
 	while [ $N -gt 0 ]
 	do
 		pid="$(cat "$SMARTDNS_PID" | head -n 1 2>/dev/null)"
@@ -348,7 +348,13 @@ case "$1" in
 		fi
 
 		if [ ! -d "/proc/$pid" ]; then
-			return 0;
+			return 0
+		fi
+
+		stat="$(cat /proc/${pid}/stat | awk '{print $3}' 2>/dev/null)"
+		if [ "$stat" = "Z" ]; then
+			$SLEEP $SLEEPTIME
+			return 0
 		fi
 
 		$SLEEP $SLEEPTIME 2>/dev/null

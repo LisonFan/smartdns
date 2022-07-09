@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -44,6 +45,14 @@
 #define TLOG_MIN_LINE_SIZE_SET (128)
 
 #define TLOG_SEGMENT_MAGIC 0xFF446154
+
+struct linux_dirent64 {
+    unsigned long long d_ino;
+    long long d_off;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[256];
+};
 
 struct tlog_log {
     char *buff;
@@ -317,7 +326,7 @@ int tlog_localtime(struct tlog_time *tm)
     return _tlog_gettime(tm);
 }
 
-tlog_log *tlog_get_root()
+tlog_log *tlog_get_root(void)
 {
     return tlog.root;
 }
@@ -504,9 +513,12 @@ static int _tlog_vprintf(struct tlog_log *log, vprint_callback print_callback, v
     if (len <= 0) {
         return -1;
     } else if (len >= log->max_line_size) {
-        strncpy(buff, "[LOG TOO LONG, DISCARD]\n", sizeof(buff));
-        buff[sizeof(buff) - 1] = '\0';
-        len = strnlen(buff, sizeof(buff));
+        len = log->max_line_size;
+        buff[len - 1] = '\0';
+        buff[len - 2] = '\n';
+        buff[len - 3] = '.';
+        buff[len - 4] = '.';
+        buff[len - 5] = '.';
     }
 
     pthread_mutex_lock(&tlog.lock);
@@ -919,47 +931,67 @@ static void _tlog_close_all_fd_by_res(void)
     }
 }
 
+static int _tlog_str_to_int(const char *str)
+{
+    int num = 0;
+
+    while (*str >= '0' && *str <= '9') {
+        num = num * 10 + (*str - '0');
+        ++str;
+    }
+
+    if (*str) {
+        return -1;
+    }
+
+    return num;
+}
+
 static void _tlog_close_all_fd(void)
 {
-    char path_name[PATH_MAX];
-    DIR *dir = NULL;
-    struct dirent *ent;
+#if defined(__linux__)
     int dir_fd = -1;
 
-    snprintf(path_name, sizeof(path_name), "/proc/self/fd/");
-    dir = opendir(path_name);
-    if (dir == NULL) {
+    dir_fd = open("/proc/self/fd/", O_RDONLY | O_DIRECTORY);
+    if (dir_fd < 0) {
         goto errout;
     }
 
-    dir_fd = dirfd(dir);
+    char buffer[sizeof(struct linux_dirent64)];
+    int bytes;
+    while ((bytes = syscall(SYS_getdents64, dir_fd,
+                (struct linux_dirent64 *)buffer,
+                sizeof(buffer)))
+        > 0) {
+        struct linux_dirent64 *entry;
+        int offset;
 
-    while ((ent = readdir(dir)) != NULL) {
-        int fd = atoi(ent->d_name);
-        if (fd < 0 || dir_fd == fd) {
-            continue;
-        }
-        switch (fd) {
-        case STDIN_FILENO:
-        case STDOUT_FILENO:
-        case STDERR_FILENO:
-            continue;
-            break;
-        default:
-            break;
-        }
+        for (offset = 0; offset < bytes; offset += entry->d_reclen) {
+            int fd;
+            entry = (struct linux_dirent64 *)(buffer + offset);
+            if ((fd = _tlog_str_to_int(entry->d_name)) < 0) {
+                continue;
+            }
 
-        close(fd);
+            if (fd == dir_fd || fd == STDIN_FILENO || fd == STDOUT_FILENO || fd == STDERR_FILENO) {
+                continue;
+            }
+            close(fd);
+        }
     }
 
-    closedir(dir);
+    close(dir_fd);
+
+    if (bytes < 0) {
+        goto errout;
+    }
 
     return;
 errout:
-    if (dir) {
-        closedir(dir);
+    if (dir_fd > 0) {
+        close(dir_fd);
     }
-
+#endif
     _tlog_close_all_fd_by_res();
     return;
 }
@@ -1395,6 +1427,35 @@ static int _tlog_root_write_log(struct tlog_log *log, const char *buff, int buff
     return tlog.output_func(&empty_info.info, buff, bufflen, tlog_get_private(log));
 }
 
+static void tlog_wait_zip_fini(void)
+{
+    tlog_log *next;
+    if (tlog.root == NULL) {
+        return;
+    }
+
+    int wait_zip = 1;
+    int time_out = 0;
+    while (wait_zip) {
+        wait_zip = 0;
+        time_out++;
+        next = tlog.log;
+        while (next) {
+            if (next->zip_pid > 0 && wait_zip == 0) {
+                wait_zip = 1;
+                usleep(1000);
+            }
+
+            if (kill(next->zip_pid, 0) != 0 || time_out >= 5000) {
+                next->zip_pid = -1;
+            }
+            next = next->next;
+        }
+    }
+
+    return;
+}
+
 static void *_tlog_work(void *arg)
 {
     int log_len = 0;
@@ -1407,6 +1468,9 @@ static void *_tlog_work(void *arg)
     void *unused __attribute__((unused));
 
     unused = arg;
+
+    // for child process
+    tlog_wait_zip_fini();
 
     while (1) {
         log_len = 0;
@@ -1680,6 +1744,12 @@ static void tlog_fork_prepare(void)
     }
 
     pthread_mutex_lock(&tlog.lock);
+    tlog_log *next;
+    next = tlog.log;
+    while (next) {
+        next->multi_log = 1;
+        next = next->next;
+    }
 }
 
 static void tlog_fork_parent(void)
@@ -1697,6 +1767,16 @@ static void tlog_fork_child(void)
     tlog_log *next;
     if (tlog.root == NULL) {
         return;
+    }
+
+    next = tlog.log;
+    while (next) {
+        next->start = 0;
+        next->end = 0;
+        next->ext_end = 0;
+        next->dropped = 0;
+        next->filesize = 0;
+        next = next->next;
     }
 
     pthread_attr_init(&attr);
@@ -1786,6 +1866,7 @@ void tlog_exit(void)
         pthread_cond_signal(&tlog.cond);
         pthread_mutex_unlock(&tlog.lock);
         pthread_join(tlog.tid, &ret);
+        tlog.tid = 0;
     }
 
     tlog.root = NULL;
@@ -1795,4 +1876,7 @@ void tlog_exit(void)
 
     pthread_cond_destroy(&tlog.cond);
     pthread_mutex_destroy(&tlog.lock);
+
+    tlog_format = NULL;
+    tlog.is_wait = 0;
 }
