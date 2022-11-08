@@ -20,6 +20,7 @@
 #define _DNS_CONF
 
 #include "art.h"
+#include "atomic.h"
 #include "conf.h"
 #include "dns.h"
 #include "dns_client.h"
@@ -37,6 +38,8 @@ extern "C" {
 #define DNS_MAX_SERVER_NAME_LEN 128
 #define DNS_MAX_PTR_LEN 128
 #define DNS_MAX_IPSET_NAMELEN 32
+#define DNS_MAX_NFTSET_FAMILYLEN 8
+#define DNS_MAX_NFTSET_NAMELEN 256
 #define DNS_GROUP_NAME_LEN 32
 #define DNS_NAX_GROUP_NUMBER 16
 #define DNS_MAX_IPLEN 64
@@ -49,9 +52,10 @@ extern "C" {
 #define DEFAULT_DNS_HTTPS_PORT 443
 #define DNS_MAX_CONF_CNAME_LEN 256
 #define SMARTDNS_CONF_FILE "/etc/smartdns/smartdns.conf"
-#define SMARTDNS_LOG_FILE "/var/log/smartdns.log"
-#define SMARTDNS_AUDIT_FILE "/var/log/smartdns-audit.log"
+#define SMARTDNS_LOG_FILE "/var/log/smartdns/smartdns.log"
+#define SMARTDNS_AUDIT_FILE "/var/log/smartdns/smartdns-audit.log"
 #define SMARTDNS_CACHE_FILE "/tmp/smartdns.cache"
+#define SMARTDNS_DEBUG_DIR "/tmp/smartdns"
 
 enum domain_rule {
 	DOMAIN_RULE_FLAGS = 0,
@@ -60,6 +64,8 @@ enum domain_rule {
 	DOMAIN_RULE_IPSET,
 	DOMAIN_RULE_IPSET_IPV4,
 	DOMAIN_RULE_IPSET_IPV6,
+	DOMAIN_RULE_NFTSET_IP,
+	DOMAIN_RULE_NFTSET_IP6,
 	DOMAIN_RULE_NAMESERVER,
 	DOMAIN_RULE_CHECKSPEED,
 	DOMAIN_RULE_MAX,
@@ -88,6 +94,9 @@ typedef enum {
 #define DOMAIN_FLAG_NAMESERVER_IGNORE (1 << 9)
 #define DOMAIN_FLAG_DUALSTACK_SELECT (1 << 10)
 #define DOMAIN_FLAG_SMARTDNS_DOMAIN (1 << 11)
+#define DOMAIN_FLAG_NFTSET_INET_IGN (1 << 12)
+#define DOMAIN_FLAG_NFTSET_IP_IGN (1 << 13)
+#define DOMAIN_FLAG_NFTSET_IP6_IGN (1 << 14)
 
 #define SERVER_FLAG_EXCLUDE_DEFAULT (1 << 0)
 
@@ -101,16 +110,25 @@ typedef enum {
 #define BIND_FLAG_NO_DUALSTACK_SELECTION (1 << 7)
 #define BIND_FLAG_FORCE_AAAA_SOA (1 << 8)
 
+struct dns_rule {
+	atomic_t refcnt;
+	enum domain_rule rule;
+	char rule_data[];
+};
+
 struct dns_rule_flags {
+	struct dns_rule head;
 	unsigned int flags;
 	unsigned int is_flag_set;
 };
 
-struct dns_address_IPV4 {
+struct dns_rule_address_IPV4 {
+	struct dns_rule head;
 	unsigned char ipv4_addr[DNS_RR_A_LEN];
 };
 
-struct dns_address_IPV6 {
+struct dns_rule_address_IPV6 {
+	struct dns_rule head;
 	unsigned char ipv6_addr[DNS_RR_AAAA_LEN];
 };
 
@@ -120,14 +138,31 @@ struct dns_ipset_name {
 };
 
 struct dns_ipset_rule {
+	struct dns_rule head;
 	const char *ipsetname;
 };
 
+struct dns_nftset_name {
+	struct hlist_node node;
+	char nftfamilyname[DNS_MAX_NFTSET_FAMILYLEN];
+	char nfttablename[DNS_MAX_NFTSET_NAMELEN];
+	char nftsetname[DNS_MAX_NFTSET_NAMELEN];
+};
+
+struct dns_nftset_rule {
+	struct dns_rule head;
+	const char *familyname;
+	const char *nfttablename;
+	const char *nftsetname;
+};
+
 struct dns_domain_rule {
-	void *rules[DOMAIN_RULE_MAX];
+	struct dns_rule head;
+	struct dns_rule *rules[DOMAIN_RULE_MAX];
 };
 
 struct dns_nameserver_rule {
+	struct dns_rule head;
 	const char *group_name;
 };
 
@@ -144,6 +179,7 @@ struct dns_domain_check_order {
 };
 
 struct dns_domain_check_orders {
+	struct dns_rule head;
 	struct dns_domain_check_order orders[DOMAIN_CHECK_NUM];
 };
 
@@ -173,7 +209,7 @@ struct dns_hosts {
 	char domain[DNS_MAX_CNAME_LEN];
 	dns_hosts_type host_type;
 	int dns_type;
-	int is_soa;	
+	int is_soa;
 	union {
 		unsigned char ipv4_addr[DNS_RR_A_LEN];
 		unsigned char ipv6_addr[DNS_RR_AAAA_LEN];
@@ -254,6 +290,46 @@ struct dns_qtype_soa_table {
 };
 extern struct dns_qtype_soa_table dns_qtype_soa_table;
 
+struct dns_domain_set_rule {
+	struct list_head list;
+	enum domain_rule type;
+	void *rule;
+	unsigned int flags;
+	unsigned int is_clear_flag;
+};
+
+struct dns_domain_set_rule_list {
+	struct hlist_node node;
+	char domain_set[DNS_MAX_CNAME_LEN];
+	struct list_head domain_ruls_list;
+};
+
+struct dns_domain_set_rule_table {
+	DECLARE_HASHTABLE(rule_list, 4);
+};
+extern struct dns_domain_set_rule_table dns_domain_set_rule_table;
+
+enum dns_domain_set_type {
+	DNS_DOMAIN_SET_LIST = 0,
+	DNS_DOMAIN_SET_GEOSITE = 1,
+};
+
+struct dns_domain_set_name {
+	struct list_head list;
+	enum dns_domain_set_type type;
+	char file[DNS_MAX_PATH];
+};
+
+struct dns_domain_set_name_list {
+	struct hlist_node node;
+	char name[DNS_MAX_CNAME_LEN];
+	struct list_head set_name_list;
+};
+struct dns_domain_set_name_table {
+	DECLARE_HASHTABLE(names, 4);
+};
+extern struct dns_domain_set_name_table dns_domain_set_name_table;
+
 extern struct dns_bind_ip dns_conf_bind_ip[DNS_MAX_BIND_IP];
 extern int dns_conf_bind_ip_num;
 
@@ -298,6 +374,12 @@ extern int dns_conf_dualstack_ip_allow_force_AAAA;
 extern int dns_conf_dualstack_ip_selection_threshold;
 
 extern int dns_conf_max_reply_ip_num;
+enum response_mode_type {
+	DNS_RESPONSE_MODE_FIRST_PING_IP = 0,
+	DNS_RESPONSE_MODE_FASTEST_IP,
+	DNS_RESPONSE_MODE_FASTEST_RESPONSE,
+};
+extern enum response_mode_type dns_conf_response_mode;
 
 extern int dns_conf_rr_ttl;
 extern int dns_conf_rr_ttl_reply_max;
@@ -305,6 +387,8 @@ extern int dns_conf_rr_ttl_min;
 extern int dns_conf_rr_ttl_max;
 extern int dns_conf_force_AAAA_SOA;
 extern int dns_conf_ipset_timeout_enable;
+extern int dns_conf_nftset_timeout_enable;
+extern int dns_conf_local_ttl;
 
 extern int dns_conf_force_no_cname;
 
@@ -314,6 +398,10 @@ extern struct dns_edns_client_subnet dns_conf_ipv4_ecs;
 extern struct dns_edns_client_subnet dns_conf_ipv6_ecs;
 
 extern char dns_conf_sni_proxy_ip[DNS_MAX_IPLEN];
+
+extern int dns_save_fail_packet;
+extern char dns_save_fail_packet_dir[DNS_MAX_PATH];
+extern char dns_resolv_file[DNS_MAX_PATH];
 
 void dns_server_load_exit(void);
 

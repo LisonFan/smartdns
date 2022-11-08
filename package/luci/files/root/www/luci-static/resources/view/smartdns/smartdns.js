@@ -21,7 +21,10 @@
 'require fs';
 'require uci';
 'require form';
+'require view';
+'require poll';
 'require rpc';
+'require ui';
 
 var conf = 'smartdns';
 var callServiceList = rpc.declare({
@@ -30,8 +33,9 @@ var callServiceList = rpc.declare({
 	params: ['name'],
 	expect: { '': {} }
 });
+var pollAdded = false;
 
-function getPidOfSmartdns() {
+function getServiceStatus() {
 	return L.resolveDefault(callServiceList(conf), {})
 		.then(function (res) {
 			var isrunning = false;
@@ -42,43 +46,19 @@ function getPidOfSmartdns() {
 		});
 }
 
-function getIPTablesRedirect() {
-	return fs.exec('/usr/sbin/iptables', ['-t', 'nat', '-nL', 'PREROUTING']).then(function (res) {
-		if (res.code === 0) {
-			return res.stdout.trim();
-		} else {
-			return "";
-		}
-	});
-}
-
-function getIP6TablesRedirect() {
-	return fs.exec('/usr/sbin/ip6tables', ['-t', 'nat', '-nL', 'PREROUTING']).then(function (res) {
-		if (res.code === 0) {
-			return res.stdout.trim();
-		} else {
-			return "";
-		}
-	});
-}
-
 function smartdnsServiceStatus() {
 	return Promise.all([
-		getPidOfSmartdns(),
-		getIPTablesRedirect(),
-		getIP6TablesRedirect()
+		getServiceStatus()
 	]);
 }
 
 function smartdnsRenderStatus(res) {
 	var renderHTML = "";
 	var isRunning = res[0];
-	var ipt = res[1];
-	var ip6t = res[2];
 
-	var serverPort = uci.get_first('smartdns', 'smartdns', 'port');
-	var redirectMode = uci.get_first('smartdns', 'smartdns', 'redirect');
-	var ipv6Enabled = uci.get_first('smartdns', 'smartdns', 'ipv6_server');
+	var autoSetDnsmasq = uci.get_first('smartdns', 'smartdns', 'auto_set_dnsmasq');
+	var smartdnsPort = uci.get_first('smartdns', 'smartdns', 'port');
+	var dnsmasqServer = uci.get_first('dhcp', 'dnsmasq', 'server');
 
 	if (isRunning) {
 		renderHTML += "<span style=\"color:green;font-weight:bold\">SmartDNS - " + _("RUNNING") + "</span>";
@@ -87,39 +67,24 @@ function smartdnsRenderStatus(res) {
 		return renderHTML;
 	}
 
-	if (redirectMode === "dnsmasq-upstream") {
-		var matchLine = "127.0.0.1#" + serverPort;
-		var dnsmasqServer = uci.get_first('dhcp', 'dnsmasq', 'server') || "";
+	if (autoSetDnsmasq === '1' && smartdnsPort != '53') {
+		var matchLine = "127.0.0.1#" + smartdnsPort;
 
-		if (dnsmasqServer.indexOf(matchLine) < 0) {
+		uci.unload('dhcp');
+		uci.load('dhcp');
+		if (dnsmasqServer == undefined || dnsmasqServer.indexOf(matchLine) < 0) {
 			renderHTML += "<br /><span style=\"color:red;font-weight:bold\">" + _("Dnsmasq Forwared To Smartdns Failure") + "</span>";
-		}
-	} else if (redirectMode === "redirect") {
-		var redirectRules = (ipt || '').split(/\n/).filter(function (rule) {
-			return rule.match(/REDIRECT/) && rule.match(/dpt:53/) && rule.match("ports " + serverPort);
-		});
-
-		if (redirectRules.length <= 0) {
-			renderHTML += "<br /><span style=\"color:red;font-weight:bold\">" + _("IPV4 53 Port Redirect Failure") + "</span>";
-			if (ipv6Enabled) {
-				var redirectRules = (ip6t || '').split(/\n/).filter(function (rule) {
-					return rule.match(/REDIRECT/) && rule.match(/dpt:53/) && rule.match("ports " + serverPort);
-				});
-				if (redirectRules.length <= 0) {
-					renderHTML += "<br /><span style=\"color:red;font-weight:bold\">" + _("IPV6 53 Port Redirect Failure") + "</span>";
-				}
-			}
 		}
 	}
 
 	return renderHTML;
 }
 
-return L.view.extend({
+return view.extend({
 	load: function () {
 		return Promise.all([
+			uci.load('dhcp'),
 			uci.load('smartdns'),
-			uci.load('dhcp')
 		]);
 	},
 	render: function (stats) {
@@ -133,19 +98,26 @@ return L.view.extend({
 		s = m.section(form.NamedSection, '_status');
 		s.anonymous = true;
 		s.render = function (section_id) {
-			L.Poll.add(function () {
+			var renderStatus = function () {
 				return L.resolveDefault(smartdnsServiceStatus()).then(function (res) {
 					var view = document.getElementById("service_status");
+					if (view == null) {
+						return;
+					}
+
 					view.innerHTML = smartdnsRenderStatus(res);
 				});
-			});
+			}
 
-			return E('div', { class: 'cbi-map' },
-				E('div', { class: 'cbi-section' }, [
-					E('div', { id: 'service_status' },
-						_('Collecting data ...'))
-				])
-			);
+			if (pollAdded == false) {
+				poll.add(renderStatus, 1);
+				pollAdded = true;
+			}
+
+			return E('div', { class: 'cbi-section' }, [
+				E('div', { id: 'service_status' },
+					_('Collecting data ...'))
+			]);
 		}
 
 		// Basic;
@@ -156,10 +128,9 @@ return L.view.extend({
 		s.tab("seconddns", _("Second Server Settings"));
 		s.tab("custom", _("Custom Settings"));
 
-		// Eanble;
 		o = s.taboption("settings", form.Flag, "enabled", _("Enable"), _("Enable or disable smartdns server"));
+		o.rmempty = false;
 		o.default = o.disabled;
-		o.rempty = false;
 
 		// server name;
 		o = s.taboption("settings", form.Value, "server_name", _("Server Name"), _("Smartdns server name"));
@@ -168,9 +139,10 @@ return L.view.extend({
 		o.rempty = false;
 
 		// Port;
-		o = s.taboption("settings", form.Value, "port", _("Local Port"), _("Smartdns local server port"));
-		o.placeholder = 6053;
-		o.default = 6053;
+		o = s.taboption("settings", form.Value, "port", _("Local Port"),
+			_("Smartdns local server port, smartdns will be automatically set as main dns when the port is 53."));
+		o.placeholder = 53;
+		o.default = 53;
 		o.datatype = "port";
 		o.rempty = false;
 
@@ -202,18 +174,29 @@ return L.view.extend({
 		o.rmempty = false;
 		o.default = o.enabled;
 
-		// Redirect;
-		o = s.taboption("settings", form.ListValue, "redirect", _("Redirect"), _("SmartDNS redirect mode"));
-		o.placeholder = "none";
-		o.value("none", _("none"));
-		o.value("dnsmasq-upstream", _("Run as dnsmasq upstream server"));
-		o.value("redirect", _("Redirect 53 port to SmartDNS"));
-		o.default = "none";
-		o.rempty = false;
-
 		// cache-size;
 		o = s.taboption("settings", form.Value, "cache_size", _("Cache Size"), _("DNS domain result cache size"));
 		o.rempty = true;
+
+		// cache-size;
+		o = s.taboption("settings", form.Flag, "resolve_local_hostnames", _("Resolve Local Hostnames"), _("Resolve local hostnames by reading Dnsmasq lease file."));
+		o.rmempty = false;
+		o.default = o.enabled;
+
+		// auto-conf-dnsmasq;
+		o = s.taboption("settings", form.Flag, "auto_set_dnsmasq", _("Automatically Set Dnsmasq"), _("Automatically set as upstream of dnsmasq when port changes."));
+		o.rmempty = false;
+		o.default = o.enabled;
+
+		// Force AAAA SOA
+		o = s.taboption("settings", form.Flag, "force_aaaa_soa", _("Force AAAA SOA"), _("Force AAAA SOA."));
+		o.rmempty = false;
+		o.default = o.disabled;
+
+		// Force HTTPS SOA
+		o = s.taboption("settings", form.Flag, "force_https_soa", _("Force HTTPS SOA"), _("Force HTTPS SOA."));
+		o.rmempty = false;
+		o.default = o.disabled;
 
 		// rr-ttl;
 		o = s.taboption("settings", form.Value, "rr_ttl", _("Domain TTL"), _("TTL for all domain result."));
@@ -229,14 +212,14 @@ return L.view.extend({
 
 		// rr-ttl-max;
 		o = s.taboption("settings", form.Value, "rr_ttl_max", _("Domain TTL Max"),
-		_("Maximum TTL for all domain result."));
+			_("Maximum TTL for all domain result."));
 		o.rempty = true;
 
 		// rr-ttl-reply-max;
-		o = s.taboption("settings", form.Value, "rr_ttl_reply_max", _("Domain Reply TTL Max"),
-		_("Maximum Reply TTL for all domain result."));
+		o = s.taboption("settings", form.Value, "rr_ttl_reply_max", _("Reply Domain TTL Max"),
+			_("Reply maximum TTL for all domain result."));
 		o.rempty = true;
-		
+
 		// second dns server;
 		// Eanble;
 		o = s.taboption("seconddns", form.Flag, "seconddns_enabled", _("Enable"),
@@ -304,7 +287,7 @@ return L.view.extend({
 		o.default = o.disabled;
 
 		// Force AAAA SOA
-		o = s.taboption("seconddns", form.Flag, "force_aaaa_soa", _("Force AAAA SOA"), _("Force AAAA SOA."));
+		o = s.taboption("seconddns", form.Flag, "seconddns_force_aaaa_soa", _("Force AAAA SOA"), _("Force AAAA SOA."));
 		o.rmempty = false;
 		o.default = o.disabled;
 
@@ -317,7 +300,12 @@ return L.view.extend({
 			return fs.trimmed('/etc/smartdns/custom.conf');
 		};
 		o.write = function (section_id, formvalue) {
-			return fs.write('/etc/smartdns/custom.conf', formvalue.trim().replace(/\r\n/g, '\n') + '\n');
+			return this.cfgvalue(section_id).then(function (value) {
+				if (value == formvalue) {
+					return
+				}
+				return fs.write('/etc/smartdns/custom.conf', formvalue.trim().replace(/\r\n/g, '\n') + '\n');
+			});
 		};
 
 		o = s.taboption("custom", form.Flag, "coredump", _("Generate Coredump"),
@@ -456,7 +444,12 @@ return L.view.extend({
 			return fs.trimmed('/etc/smartdns/address.conf');
 		};
 		o.write = function (section_id, formvalue) {
-			return fs.write('/etc/smartdns/address.conf', formvalue.trim().replace(/\r\n/g, '\n') + '\n');
+			return this.cfgvalue(section_id).then(function (value) {
+				if (value == formvalue) {
+					return
+				}
+				return fs.write('/etc/smartdns/address.conf', formvalue.trim().replace(/\r\n/g, '\n') + '\n');
+			});
 		};
 
 		// IP Blacklist;
@@ -468,7 +461,12 @@ return L.view.extend({
 			return fs.trimmed('/etc/smartdns/blacklist-ip.conf');
 		};
 		o.write = function (section_id, formvalue) {
-			return fs.write('/etc/smartdns/blacklist-ip.conf', formvalue.trim().replace(/\r\n/g, '\n') + '\n');
+			return this.cfgvalue(section_id).then(function (value) {
+				if (value == formvalue) {
+					return
+				}
+				return fs.write('/etc/smartdns/blacklist-ip.conf', formvalue.trim().replace(/\r\n/g, '\n') + '\n');
+			});
 		};
 
 		// Doman addresss;
@@ -492,6 +490,17 @@ return L.view.extend({
 			window.open("https://pymumu.github.io/smartdns/#donate", '_blank');
 		};
 
+		o = s.option(form.DummyValue, "_restart", _("Restart Service"));
+		o.renderWidget = function () {
+			return E('button', {
+				'class': 'btn cbi-button cbi-button-apply',
+				'id': 'btn_restart',
+				'click': ui.createHandlerFn(this, function () {
+					return fs.exec('/etc/init.d/smartdns', ['restart'])
+						.catch(function (e) { ui.addNotification(null, E('p', e.message), 'error') });
+				})
+			}, [_("Restart")]);
+		}
 		return m.render();
 	}
 });

@@ -18,10 +18,11 @@
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#include <stdio.h>
 #endif
-#include "util.h"
 #include "dns_conf.h"
 #include "tlog.h"
+#include "util.h"
 #include <arpa/inet.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -34,15 +35,21 @@
 #include <openssl/crypto.h>
 #include <openssl/ssl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 #include <unwind.h>
+
+#ifdef WITH_NFTSET
+#include <nftables/libnftables.h>
+#endif
 
 #define TMP_BUFF_LEN_32 32
 
@@ -78,6 +85,8 @@
 #define NETLINK_ALIGN(len) (((len) + 3) & ~(3))
 
 #define BUFF_SZ 1024
+#define PACKET_BUF_SIZE 8192
+#define PACKET_MAGIC 0X11040918
 
 struct ipset_netlink_attr {
 	unsigned short len;
@@ -108,12 +117,12 @@ char *gethost_by_addr(char *host, int maxsize, struct sockaddr *addr)
 	host[0] = 0;
 	switch (addr_store->ss_family) {
 	case AF_INET: {
-		struct sockaddr_in *addr_in;
+		struct sockaddr_in *addr_in = NULL;
 		addr_in = (struct sockaddr_in *)addr;
 		inet_ntop(AF_INET, &addr_in->sin_addr, host, maxsize);
 	} break;
 	case AF_INET6: {
-		struct sockaddr_in6 *addr_in6;
+		struct sockaddr_in6 *addr_in6 = NULL;
 		addr_in6 = (struct sockaddr_in6 *)addr;
 		if (IN6_IS_ADDR_V4MAPPED(&addr_in6->sin6_addr)) {
 			struct sockaddr_in addr_in4;
@@ -176,14 +185,14 @@ int getsocknet_inet(int fd, struct sockaddr *addr, socklen_t *addr_len)
 
 	switch (addr_store.ss_family) {
 	case AF_INET: {
-		struct sockaddr_in *addr_in;
+		struct sockaddr_in *addr_in = NULL;
 		addr_in = (struct sockaddr_in *)addr;
 		addr_in->sin_family = AF_INET;
 		*addr_len = sizeof(struct sockaddr_in);
 		memcpy(addr, addr_in, sizeof(struct sockaddr_in));
 	} break;
 	case AF_INET6: {
-		struct sockaddr_in6 *addr_in6;
+		struct sockaddr_in6 *addr_in6 = NULL;
 		addr_in6 = (struct sockaddr_in6 *)addr;
 		if (IN6_IS_ADDR_V4MAPPED(&addr_in6->sin6_addr)) {
 			struct sockaddr_in addr_in4;
@@ -411,7 +420,7 @@ int parse_uri(char *value, char *scheme, char *host, int *port, char *path)
 	};
 
 	field_len = host_end - process_ptr;
-	if (field_len >= sizeof(host_name)) {
+	if (field_len >= (int)sizeof(host_name)) {
 		return -1;
 	}
 	memcpy(host_name, process_ptr, field_len);
@@ -431,7 +440,7 @@ int parse_uri(char *value, char *scheme, char *host, int *port, char *path)
 
 int set_fd_nonblock(int fd, int nonblock)
 {
-	int ret;
+	int ret = 0;
 	int flags = fcntl(fd, F_GETFL);
 
 	if (flags == -1) {
@@ -523,7 +532,7 @@ static int _ipset_socket_init(void)
 	return 0;
 }
 
-static int _ipset_support_timeout(const char *ipsetname)
+static int _ipset_support_timeout(void)
 {
 	if (dns_conf_ipset_timeout_enable) {
 		return 0;
@@ -535,15 +544,15 @@ static int _ipset_support_timeout(const char *ipsetname)
 static int _ipset_operate(const char *ipsetname, const unsigned char addr[], int addr_len, unsigned long timeout,
 						  int operate)
 {
-	struct nlmsghdr *netlink_head;
-	struct ipset_netlink_msg *netlink_msg;
+	struct nlmsghdr *netlink_head = NULL;
+	struct ipset_netlink_msg *netlink_msg = NULL;
 	struct ipset_netlink_attr *nested[3];
 	char buffer[BUFF_SZ];
-	uint8_t proto;
-	ssize_t rc;
+	uint8_t proto = 0;
+	ssize_t rc = 0;
 	int af = 0;
 	static const struct sockaddr_nl snl = {.nl_family = AF_NETLINK};
-	uint32_t expire;
+	uint32_t expire = 0;
 
 	if (addr_len != IPV4_ADDR_LEN && addr_len != IPV6_ADDR_LEN) {
 		errno = EINVAL;
@@ -597,7 +606,7 @@ static int _ipset_operate(const char *ipsetname, const unsigned char addr[], int
 					addr);
 	nested[1]->len = (void *)buffer + NETLINK_ALIGN(netlink_head->nlmsg_len) - (void *)nested[1];
 
-	if (timeout > 0 && _ipset_support_timeout(ipsetname) == 0) {
+	if (timeout > 0 && _ipset_support_timeout() == 0) {
 		expire = htonl(timeout);
 		_ipset_add_attr(netlink_head, IPSET_ATTR_TIMEOUT | NLA_F_NET_BYTEORDER, sizeof(expire), &expire);
 	}
@@ -632,14 +641,79 @@ int ipset_del(const char *ipsetname, const unsigned char addr[], int addr_len)
 	return _ipset_operate(ipsetname, addr, addr_len, 0, IPSET_DEL);
 }
 
+#ifdef WITH_NFTSET
+static struct nft_ctx *_nftset_init(void)
+{
+	static struct nft_ctx *nft_ctx = NULL;
+	if (nft_ctx) {
+		return nft_ctx;
+	}
+
+	nft_ctx = nft_ctx_new(NFT_CTX_DEFAULT);
+	if (!nft_ctx) {
+		return NULL;
+	}
+
+	nft_ctx_buffer_error(nft_ctx);
+	return nft_ctx;
+}
+
+static int _nftset_operate(const char *familyname, const char *tablename, const char *setname,
+						   const unsigned char addr[], int af, const char *op, const char *flags)
+{
+	char cmd_buf[1024] = {'\0'};
+
+	struct nft_ctx *nft_ctx = _nftset_init();
+	if (nft_ctx == NULL) {
+		return -1;
+	}
+
+	char addr_str[INET6_ADDRSTRLEN];
+	if (!inet_ntop(af, addr, addr_str, INET6_ADDRSTRLEN)) {
+		return -1;
+	}
+
+	int ret = snprintf(cmd_buf, sizeof(cmd_buf), "%s element %s %s %s { %s %s }", op, familyname, tablename, setname,
+					   addr_str, flags);
+
+	if (ret == -1) {
+		return -1;
+	}
+
+	ret = nft_run_cmd_from_buffer(nft_ctx, cmd_buf);
+	nft_ctx_get_error_buffer(nft_ctx);
+
+	return ret;
+}
+
+int nftset_add(const char *familyname, const char *tablename, const char *setname, const unsigned char addr[],
+			   int addr_len, unsigned long timeout)
+{
+	char flag_timeout[32] = {'\0'};
+	int af = addr_len == IPV6_ADDR_LEN ? AF_INET6 : AF_INET;
+	if (dns_conf_nftset_timeout_enable) {
+		snprintf(flag_timeout, sizeof(flag_timeout), "timeout %lus", timeout);
+	}
+	return _nftset_operate(familyname, tablename, setname, addr, af, "add", flag_timeout);
+}
+
+int nftset_del(const char *familyname, const char *tablename, const char *setname, const unsigned char addr[],
+			   int addr_len)
+{
+	int af = addr_len == IPV6_ADDR_LEN ? AF_INET6 : AF_INET;
+	return _nftset_operate(familyname, tablename, setname, addr, af, "delete", "");
+}
+#endif
+
 unsigned char *SSL_SHA256(const unsigned char *d, size_t n, unsigned char *md)
 {
 	static unsigned char m[SHA256_DIGEST_LENGTH];
 
-	if (md == NULL)
+	if (md == NULL) {
 		md = m;
+	}
 
-	EVP_MD_CTX* ctx = EVP_MD_CTX_create();
+	EVP_MD_CTX *ctx = EVP_MD_CTX_create();
 	if (ctx == NULL) {
 		return NULL;
 	}
@@ -656,7 +730,7 @@ unsigned char *SSL_SHA256(const unsigned char *d, size_t n, unsigned char *md)
 int SSL_base64_decode(const char *in, unsigned char *out)
 {
 	size_t inlen = strlen(in);
-	int outlen;
+	int outlen = 0;
 
 	if (inlen == 0) {
 		return 0;
@@ -679,8 +753,8 @@ errout:
 
 int create_pid_file(const char *pid_file)
 {
-	int fd;
-	int flags;
+	int fd = 0;
+	int flags = 0;
 	char buff[TMP_BUFF_LEN_32];
 
 	/*  create pid file, and lock this file */
@@ -745,7 +819,7 @@ static __attribute__((unused)) void _pthreads_locking_callback(int mode, int typ
 
 static __attribute__((unused)) unsigned long _pthreads_thread_id(void)
 {
-	unsigned long ret;
+	unsigned long ret = 0;
 
 	ret = (unsigned long)pthread_self();
 	return (ret);
@@ -753,16 +827,18 @@ static __attribute__((unused)) unsigned long _pthreads_thread_id(void)
 
 void SSL_CRYPTO_thread_setup(void)
 {
-	int i;
+	int i = 0;
 
 	lock_cs = OPENSSL_malloc(CRYPTO_num_locks() * sizeof(pthread_mutex_t));
 	lock_count = OPENSSL_malloc(CRYPTO_num_locks() * sizeof(long));
 	if (!lock_cs || !lock_count) {
 		/* Nothing we can do about this...void function! */
-		if (lock_cs)
+		if (lock_cs) {
 			OPENSSL_free(lock_cs);
-		if (lock_count)
+		}
+		if (lock_count) {
 			OPENSSL_free(lock_count);
+		}
 		return;
 	}
 	for (i = 0; i < CRYPTO_num_locks(); i++) {
@@ -780,7 +856,7 @@ void SSL_CRYPTO_thread_setup(void)
 
 void SSL_CRYPTO_thread_cleanup(void)
 {
-	int i;
+	int i = 0;
 
 	CRYPTO_set_locking_callback(NULL);
 	for (i = 0; i < CRYPTO_num_locks(); i++) {
@@ -817,18 +893,20 @@ static int parse_server_name_extension(const char *, size_t, char *, const char 
  */
 int parse_tls_header(const char *data, size_t data_len, char *hostname, const char **hostname_ptr)
 {
-	char tls_content_type;
-	char tls_version_major;
-	char tls_version_minor;
+	char tls_content_type = 0;
+	char tls_version_major = 0;
+	char tls_version_minor = 0;
 	size_t pos = TLS_HEADER_LEN;
-	size_t len;
+	size_t len = 0;
 
-	if (hostname == NULL)
+	if (hostname == NULL) {
 		return -3;
+	}
 
 	/* Check that our TCP payload is at least large enough for a TLS header */
-	if (data_len < TLS_HEADER_LEN)
+	if (data_len < TLS_HEADER_LEN) {
 		return -1;
+	}
 
 	/* SSL 2.0 compatible Client Hello
 	 *
@@ -856,8 +934,9 @@ int parse_tls_header(const char *data, size_t data_len, char *hostname, const ch
 	data_len = MIN(data_len, len);
 
 	/* Check we received entire TLS record length */
-	if (data_len < len)
+	if (data_len < len) {
 		return -1;
+	}
 
 	/*
 	 * Handshake
@@ -879,20 +958,23 @@ int parse_tls_header(const char *data, size_t data_len, char *hostname, const ch
 	pos += 38;
 
 	/* Session ID */
-	if (pos + 1 > data_len)
+	if (pos + 1 > data_len) {
 		return -5;
+	}
 	len = (unsigned char)data[pos];
 	pos += 1 + len;
 
 	/* Cipher Suites */
-	if (pos + 2 > data_len)
+	if (pos + 2 > data_len) {
 		return -5;
+	}
 	len = ((unsigned char)data[pos] << 8) + (unsigned char)data[pos + 1];
 	pos += 2 + len;
 
 	/* Compression Methods */
-	if (pos + 1 > data_len)
+	if (pos + 1 > data_len) {
 		return -5;
+	}
 	len = (unsigned char)data[pos];
 	pos += 1 + len;
 
@@ -901,20 +983,22 @@ int parse_tls_header(const char *data, size_t data_len, char *hostname, const ch
 	}
 
 	/* Extensions */
-	if (pos + 2 > data_len)
+	if (pos + 2 > data_len) {
 		return -5;
+	}
 	len = ((unsigned char)data[pos] << 8) + (unsigned char)data[pos + 1];
 	pos += 2;
 
-	if (pos + len > data_len)
+	if (pos + len > data_len) {
 		return -5;
+	}
 	return parse_extensions(data + pos, len, hostname, hostname_ptr);
 }
 
 static int parse_extensions(const char *data, size_t data_len, char *hostname, const char **hostname_ptr)
 {
 	size_t pos = 0;
-	size_t len;
+	size_t len = 0;
 
 	/* Parse each 4 bytes for the extension header */
 	while (pos + 4 <= data_len) {
@@ -925,15 +1009,17 @@ static int parse_extensions(const char *data, size_t data_len, char *hostname, c
 		if (data[pos] == 0x00 && data[pos + 1] == 0x00) {
 			/* There can be only one extension of each type, so we break
 			 * our state and move p to beinnging of the extension here */
-			if (pos + 4 + len > data_len)
+			if (pos + 4 + len > data_len) {
 				return -5;
+			}
 			return parse_server_name_extension(data + pos + 4, len, hostname, hostname_ptr);
 		}
 		pos += 4 + len; /* Advance to the next extension header */
 	}
 	/* Check we ended where we expected to */
-	if (pos != data_len)
+	if (pos != data_len) {
 		return -5;
+	}
 
 	return -2;
 }
@@ -941,13 +1027,14 @@ static int parse_extensions(const char *data, size_t data_len, char *hostname, c
 static int parse_server_name_extension(const char *data, size_t data_len, char *hostname, const char **hostname_ptr)
 {
 	size_t pos = 2; /* skip server name list length */
-	size_t len;
+	size_t len = 0;
 
 	while (pos + 3 < data_len) {
 		len = ((unsigned char)data[pos + 1] << 8) + (unsigned char)data[pos + 2];
 
-		if (pos + 3 + len > data_len)
+		if (pos + 3 + len > data_len) {
 			return -5;
+		}
 
 		switch (data[pos]) { /* name type */
 		case 0x00:           /* host_name */
@@ -964,8 +1051,9 @@ static int parse_server_name_extension(const char *data, size_t data_len, char *
 		pos += 3 + len;
 	}
 	/* Check we ended where we expected to */
-	if (pos != data_len)
+	if (pos != data_len) {
 		return -5;
+	}
 
 	return -2;
 }
@@ -973,8 +1061,12 @@ static int parse_server_name_extension(const char *data, size_t data_len, char *
 void get_compiled_time(struct tm *tm)
 {
 	char s_month[5];
-	int month, day, year;
-	int hour, min, sec;
+	int month = 0;
+	int day = 0;
+	int year = 0;
+	int hour = 0;
+	int min = 0;
+	int sec = 0;
 	static const char *month_names = "JanFebMarAprMayJunJulAugSepOctNovDec";
 
 	sscanf(__DATE__, "%4s %d %d", s_month, &day, &year);
@@ -992,8 +1084,9 @@ void get_compiled_time(struct tm *tm)
 int is_numeric(const char *str)
 {
 	while (*str != '\0') {
-		if (*str < '0' || *str > '9')
+		if (*str < '0' || *str > '9') {
 			return -1;
+		}
 		str++;
 	}
 	return 0;
@@ -1082,9 +1175,9 @@ static _Unwind_Reason_Code unwind_callback(struct _Unwind_Context *context, void
 	if (pc) {
 		if (state->current == state->end) {
 			return _URC_END_OF_STACK;
-		} else {
-			*state->current++ = (void *)(pc);
 		}
+
+		*state->current++ = (void *)(pc);
 	}
 	return _URC_NO_REASON;
 }
@@ -1101,7 +1194,7 @@ void print_stack(void)
 	if (frame_num == 0) {
 		return;
 	}
-	
+
 	tlog(TLOG_FATAL, "Stack:");
 	for (idx = 0; idx < frame_num; ++idx) {
 		const void *addr = buffer[idx];
@@ -1114,13 +1207,31 @@ void print_stack(void)
 		}
 
 		void *offset = (void *)((char *)(addr) - (char *)(info.dli_fbase));
-		tlog(TLOG_FATAL, "#%.2d: %p %s from %s+%p", idx + 1, addr, symbol, info.dli_fname, offset);
+		tlog(TLOG_FATAL, "#%.2d: %p %s() from %s+%p", idx + 1, addr, symbol, info.dli_fname, offset);
 	}
+}
+
+void bug_ext(const char *file, int line, const char *func, const char *errfmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, errfmt);
+	tlog_vext(TLOG_FATAL, file, line, func, NULL, errfmt, ap);
+	va_end(ap);
+
+	print_stack();
+	/* trigger BUG */
+	sleep(1);
+	raise(SIGSEGV);
+
+	while (true) {
+		sleep(1);
+	};
 }
 
 int write_file(const char *filename, void *data, int data_len)
 {
-	int fd = open(filename, O_WRONLY|O_CREAT, 0644);
+	int fd = open(filename, O_WRONLY | O_CREAT, 0644);
 	if (fd < 0) {
 		return -1;
 	}
@@ -1139,3 +1250,277 @@ errout:
 
 	return -1;
 }
+
+int dns_packet_save(const char *dir, const char *type, const char *from, const void *packet, int packet_len)
+{
+	char *data = NULL;
+	int data_len = 0;
+	char filename[BUFF_SZ];
+	char time_s[BUFF_SZ];
+	int ret = -1;
+
+	struct tm *ptm;
+	struct tm tm;
+	struct timeval tmval;
+	struct stat sb;
+
+	if (stat(dir, &sb) != 0) {
+		mkdir(dir, 0750);
+	}
+
+	if (gettimeofday(&tmval, NULL) != 0) {
+		return -1;
+	}
+
+	ptm = localtime_r(&tmval.tv_sec, &tm);
+	if (ptm == NULL) {
+		return -1;
+	}
+
+	ret = snprintf(time_s, sizeof(time_s) - 1, "%.4d-%.2d-%.2d %.2d:%.2d:%.2d.%.3d", ptm->tm_year + 1900,
+				   ptm->tm_mon + 1, ptm->tm_mday, ptm->tm_hour, ptm->tm_min, ptm->tm_sec, (int)(tmval.tv_usec / 1000));
+	ret = snprintf(filename, sizeof(filename) - 1, "%s/%s-%.4d%.2d%.2d-%.2d%.2d%.2d%.1d.packet", dir, type,
+				   ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday, ptm->tm_hour, ptm->tm_min, ptm->tm_sec,
+				   (int)(tmval.tv_usec / 100000));
+
+	data = malloc(PACKET_BUF_SIZE);
+	if (data == NULL) {
+		return -1;
+	}
+
+	data_len = snprintf(data, PACKET_BUF_SIZE,
+						"type: %s\n"
+						"from: %s\n"
+						"time: %s\n"
+						"packet-len: %d\n",
+						type, from, time_s, packet_len);
+	if (data_len <= 0 || data_len >= PACKET_BUF_SIZE) {
+		goto out;
+	}
+
+	data[data_len] = 0;
+	data_len++;
+	uint32_t magic = htonl(PACKET_MAGIC);
+	memcpy(data + data_len, &magic, sizeof(magic));
+	data_len += sizeof(magic);
+	int len_in_h = htonl(packet_len);
+	memcpy(data + data_len, &len_in_h, sizeof(len_in_h));
+	data_len += 4;
+	memcpy(data + data_len, packet, packet_len);
+	data_len += packet_len;
+
+	ret = write_file(filename, data, data_len);
+	if (ret != 0) {
+		goto out;
+	}
+
+	ret = 0;
+out:
+	if (data) {
+		free(data);
+	}
+
+	return ret;
+}
+
+#ifdef DEBUG
+struct _dns_read_packet_info {
+	int data_len;
+	int message_len;
+	char *message;
+	int packet_len;
+	uint8_t *packet;
+	uint8_t data[0];
+};
+
+static struct _dns_read_packet_info *_dns_read_packet_file(const char *packet_file)
+{
+	struct _dns_read_packet_info *info = NULL;
+	int fd = 0;
+	int len = 0;
+	int message_len = 0;
+	uint8_t *ptr = NULL;
+
+	info = malloc(sizeof(struct _dns_read_packet_info) + PACKET_BUF_SIZE);
+	fd = open(packet_file, O_RDONLY);
+	if (fd < 0) {
+		printf("open file %s failed, %s\n", packet_file, strerror(errno));
+		goto errout;
+	}
+
+	len = read(fd, info->data, PACKET_BUF_SIZE);
+	if (len < 0) {
+		printf("read file %s failed, %s\n", packet_file, strerror(errno));
+		goto errout;
+	}
+
+	message_len = strnlen((char *)info->data, PACKET_BUF_SIZE);
+	if (message_len >= 512 || message_len >= len) {
+		printf("invalid packet file, bad message len\n");
+		goto errout;
+	}
+
+	info->message_len = message_len;
+	info->message = (char *)info->data;
+
+	ptr = info->data + message_len + 1;
+	uint32_t magic = 0;
+	if (ptr - (uint8_t *)info + sizeof(magic) >= (size_t)len) {
+		printf("invalid packet file, magic length is invalid.\n");
+		goto errout;
+	}
+
+	memcpy(&magic, ptr, sizeof(magic));
+	if (magic != htonl(PACKET_MAGIC)) {
+		printf("invalid packet file, bad magic\n");
+		goto errout;
+	}
+	ptr += sizeof(magic);
+
+	uint32_t packet_len = 0;
+	if (ptr - info->data + sizeof(packet_len) >= (size_t)len) {
+		printf("invalid packet file, packet length is invalid.\n");
+		goto errout;
+	}
+
+	memcpy(&packet_len, ptr, sizeof(packet_len));
+	packet_len = ntohl(packet_len);
+	ptr += sizeof(packet_len);
+	if (packet_len != (size_t)len - (ptr - info->data)) {
+		printf("invalid packet file, packet length is invalid\n");
+		goto errout;
+	}
+
+	info->packet_len = packet_len;
+	info->packet = ptr;
+
+	close(fd);
+	return info;
+errout:
+
+	if (fd > 0) {
+		close(fd);
+	}
+
+	if (info) {
+		free(info);
+	}
+
+	return NULL;
+}
+
+static int _dns_debug_display(struct dns_packet *packet)
+{
+	int i = 0;
+	int j = 0;
+	int ttl = 0;
+	struct dns_rrs *rrs = NULL;
+	int rr_count = 0;
+	char req_host[MAX_IP_LEN];
+
+	for (j = 1; j < DNS_RRS_END; j++) {
+		rrs = dns_get_rrs_start(packet, j, &rr_count);
+		printf("section: %d\n", j);
+		for (i = 0; i < rr_count && rrs; i++, rrs = dns_get_rrs_next(packet, rrs)) {
+			switch (rrs->type) {
+			case DNS_T_A: {
+				unsigned char addr[4];
+				char name[DNS_MAX_CNAME_LEN] = {0};
+				/* get A result */
+				dns_get_A(rrs, name, DNS_MAX_CNAME_LEN, &ttl, addr);
+				req_host[0] = '\0';
+				inet_ntop(AF_INET, addr, req_host, sizeof(req_host));
+				printf("domain: %s A: %s TTL: %d\n", name, req_host, ttl);
+			} break;
+			case DNS_T_AAAA: {
+				unsigned char addr[16];
+				char name[DNS_MAX_CNAME_LEN] = {0};
+				dns_get_AAAA(rrs, name, DNS_MAX_CNAME_LEN, &ttl, addr);
+				req_host[0] = '\0';
+				inet_ntop(AF_INET6, addr, req_host, sizeof(req_host));
+				printf("domain: %s AAAA: %s TTL:%d\n", name, req_host, ttl);
+			} break;
+			case DNS_T_NS: {
+				char cname[DNS_MAX_CNAME_LEN];
+				char name[DNS_MAX_CNAME_LEN] = {0};
+				dns_get_CNAME(rrs, name, DNS_MAX_CNAME_LEN, &ttl, cname, DNS_MAX_CNAME_LEN);
+				printf("domain: %s TTL: %d NS: %s\n", name, ttl, cname);
+			} break;
+			case DNS_T_CNAME: {
+				char cname[DNS_MAX_CNAME_LEN];
+				char name[DNS_MAX_CNAME_LEN] = {0};
+				if (dns_conf_force_no_cname) {
+					continue;
+				}
+
+				dns_get_CNAME(rrs, name, DNS_MAX_CNAME_LEN, &ttl, cname, DNS_MAX_CNAME_LEN);
+				printf("domain: %s TTL: %d CNAME: %s\n", name, ttl, cname);
+			} break;
+			case DNS_T_SOA: {
+				char name[DNS_MAX_CNAME_LEN] = {0};
+				struct dns_soa soa;
+				dns_get_SOA(rrs, name, 128, &ttl, &soa);
+				printf("domain: %s SOA: mname: %s, rname: %s, serial: %d, refresh: %d, retry: %d, expire: "
+					   "%d, minimum: %d",
+					   name, soa.mname, soa.rname, soa.serial, soa.refresh, soa.retry, soa.expire, soa.minimum);
+			} break;
+			default:
+				break;
+			}
+		}
+		printf("\n");
+	}
+
+	return 0;
+}
+
+int dns_packet_debug(const char *packet_file)
+{
+	struct _dns_read_packet_info *info = NULL;
+	char buff[DNS_PACKSIZE];
+
+	tlog_setlogscreen_only(1);
+	tlog_setlevel(TLOG_DEBUG);
+
+	info = _dns_read_packet_file(packet_file);
+	if (info == NULL) {
+		goto errout;
+	}
+
+	const char *send_env = getenv("SMARTDNS_DEBUG_SEND");
+	if (send_env != NULL) {
+		char ip[32];
+		int port = 53;
+		if (parse_ip(send_env, ip, &port) == 0) {
+			int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+			if (sockfd > 0) {
+				struct sockaddr_in server;
+				server.sin_family = AF_INET;
+				server.sin_port = htons(port);
+				server.sin_addr.s_addr = inet_addr(ip);
+				sendto(sockfd, info->packet, info->packet_len, 0, (struct sockaddr *)&server, sizeof(server));
+				close(sockfd);
+			}
+		}
+	}
+
+	struct dns_packet *packet = (struct dns_packet *)buff;
+	if (dns_decode(packet, DNS_PACKSIZE, info->packet, info->packet_len) != 0) {
+		printf("decode failed.\n");
+		goto errout;
+	}
+
+	_dns_debug_display(packet);
+
+	free(info);
+	return 0;
+
+errout:
+	if (info) {
+		free(info);
+	}
+
+	return -1;
+}
+
+#endif
