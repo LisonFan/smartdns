@@ -16,6 +16,8 @@ RUN apt update && \
     export CC=musl-gcc && \
     if [ "$(uname -m)" = "aarch64" ]; then \
         ./config --prefix=/opt/build no-tests -mno-outline-atomics ; \
+    elif [ "$(uname -m)" = "arm" ]; then \
+        ./config linux-armv4 --prefix=/opt/build no-tests ; \
     else \ 
         ./config --prefix=/opt/build no-tests ; \
     fi && \
