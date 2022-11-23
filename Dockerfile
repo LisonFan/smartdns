@@ -16,8 +16,6 @@ RUN apt-get update && \
     export CC=musl-gcc && \
     if [ "$(uname -m)" = "aarch64" ]; then \
         ./config --prefix=/opt/build no-tests -mno-outline-atomics ; \
-    elif [ "$(uname -m)" = "armv7l" ]; then \
-        ./config --prefix=/opt/build no-tests -mfloat-abi=soft ; \
     else \ 
         ./config --prefix=/opt/build no-tests ; \
     fi && \
