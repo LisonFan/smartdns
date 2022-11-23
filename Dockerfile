@@ -4,7 +4,7 @@ LABEL previous-stage=smartdns-builder
 # prepare builder
 ARG OPENSSL_VER=1.1.1f
 RUN apt-get update && \
-    apt-get install -y perl curl make musl-tools musl-dev ca-certificates linux-headers-generic && \
+    apt-get install -y perl curl make musl-tools musl-dev ca-certificates && \
     ln -s /usr/include/linux /usr/include/$(uname -m)-linux-musl && \
     ln -s /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl && \
     ln -s /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl && \
