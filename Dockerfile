@@ -37,9 +37,13 @@ RUN cd /build/smartdns && \
     cp package/smartdns/usr /release/ -a && \
     cd / && rm -rf /build
 
-FROM busybox:latest
+FROM alpine:latest
 COPY --from=smartdns-builder /release/ /
+RUN set -ex \
+    && apk add --no-cache \
+        ca-certificates
 EXPOSE 53/udp
+ENV TZ=Asia/Shanghai
 VOLUME "/etc/smartdns/"
 
 CMD ["/usr/sbin/smartdns", "-f", "-x"]
