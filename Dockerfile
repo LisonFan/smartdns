@@ -18,7 +18,7 @@ RUN echo "$(uname -m)" && \
     if [ "$(uname -m)" = "aarch64" ]; then \
         ./config --prefix=/opt/build no-tests -mno-outline-atomics ; \
     elif [ "$(uname -m)" = "armv7l" ]; then \
-        ./config linux-armv4 --prefix=/opt/build no-tests ; \
+        ./config --prefix=/opt/build no-tests -mfloat-abi=soft ; \
     else \ 
         ./config --prefix=/opt/build no-tests ; \
     fi && \
