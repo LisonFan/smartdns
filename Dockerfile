@@ -3,9 +3,8 @@ LABEL previous-stage=smartdns-builder
 
 # prepare builder
 ARG OPENSSL_VER=1.1.1f
-RUN echo "$(uname -m)" && \
-    apt update && \
-    apt install -y perl curl make musl-tools musl-dev && \
+RUN apt update && \
+    apt install -y perl curl make musl-tools musl-dev ca-certificates && \
     ln -s /usr/include/linux /usr/include/$(uname -m)-linux-musl && \
     ln -s /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl && \
     ln -s /usr/include/$(uname -m)-linux-gnu/asm /usr/include/$(uname -m)-linux-musl && \
@@ -35,18 +34,15 @@ RUN cd /build/smartdns && \
     \
     ( cd package && tar -xvf *.tar.gz && chmod a+x smartdns/etc/init.d/smartdns ) && \
     \
-    mkdir -p /release && \
+    mkdir -p /release/var/log /release/var/run && \
     cp package/smartdns/etc /release/ -a && \
     cp package/smartdns/usr /release/ -a && \
+    cp /etc/ssl/certs /etc/ssl/certs /release/ -a && \
     cd / && rm -rf /build
 
-FROM alpine:latest
+FROM busybox:latest
 COPY --from=smartdns-builder /release/ /
-RUN set -ex \
-    && apk add --no-cache \
-        ca-certificates
 EXPOSE 53/udp
-ENV TZ=Asia/Shanghai
 VOLUME "/etc/smartdns/"
 
 CMD ["/usr/sbin/smartdns", "-f", "-x"]
