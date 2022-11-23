@@ -3,7 +3,8 @@ LABEL previous-stage=smartdns-builder
 
 # prepare builder
 ARG OPENSSL_VER=1.1.1f
-RUN apt update && \
+RUN echo "$(uname -m)" && \
+    apt update && \
     apt install -y perl curl make musl-tools musl-dev && \
     ln -s /usr/include/linux /usr/include/$(uname -m)-linux-musl && \
     ln -s /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl && \
