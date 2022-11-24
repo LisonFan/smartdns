@@ -43,7 +43,7 @@ RUN cd /build/smartdns && \
 
 FROM busybox:latest
 COPY --from=smartdns-builder /release/ /
-RUN cd /etc/ && ls -la && cd /etc/ssl && ls -la && cd /etc/ssl/certs && ls -la
+RUN cd /etc/ && ls -la
 EXPOSE 53/udp
 VOLUME "/etc/smartdns/"
 
