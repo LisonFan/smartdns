@@ -20,9 +20,7 @@ RUN apt-get update && \
         ./config --prefix=/opt/build no-tests ; \
     fi && \
     make all -j8 && make install_sw && \
-    cd / && rm -rf /build && \
-    cd /etc/ssl && ls -la && \
-    cd certs && ls -la
+    cd / && rm -rf /build
 
 # do make
 COPY . /build/smartdns/
@@ -38,12 +36,10 @@ RUN cd /build/smartdns && \
     cp package/smartdns/etc /release/ -a && \
     cp package/smartdns/usr /release/ -a && \
     cp /etc/ssl/certs /release//etc/ssl -a && \
-    cd / && rm -rf /build && \
-    cd /release && ls -la 
+    cd / && rm -rf /build
 
 FROM busybox:latest
 COPY --from=smartdns-builder /release/ /
-RUN cd /etc/ && ls -la
 EXPOSE 53/udp
 VOLUME "/etc/smartdns/"
 
