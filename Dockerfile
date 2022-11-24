@@ -37,12 +37,13 @@ RUN cd /build/smartdns && \
     mkdir -p /release/var/log /release/var/run && \
     cp package/smartdns/etc /release/ -a && \
     cp package/smartdns/usr /release/ -a && \
-    cp /etc/ssl/certs /release/ -a && \
+    cp /etc/ssl/certs /release//etc/ssl -a && \
     cd / && rm -rf /build && \
     cd /release && ls -la 
 
 FROM busybox:latest
 COPY --from=smartdns-builder /release/ /
+RUN cd /etc/ && ls -la && cd /etc/ssl && ls -la && cd /etc/ssl/certs && ls -la
 EXPOSE 53/udp
 VOLUME "/etc/smartdns/"
 
