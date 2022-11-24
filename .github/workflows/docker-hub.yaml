@@ -35,6 +35,3 @@ jobs:
           # linux/riscv64
           # push: true
           # tags: lisonfan/smartdns:latest
-
-      - name: Setup Debug Session
-        uses: csexton/debugger-action@master
