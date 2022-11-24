@@ -35,7 +35,7 @@ RUN cd /build/smartdns && \
     mkdir -p /release/var/log /release/var/run && \
     cp package/smartdns/etc /release/ -a && \
     cp package/smartdns/usr /release/ -a && \
-    cp /etc/ssl/certs /release//etc/ssl -a && \
+    cp /etc/ssl/ /release//etc/ssl -a && \
     cd / && rm -rf /build
 
 FROM busybox:latest
