@@ -20,7 +20,8 @@ RUN apt-get update && \
         ./config --prefix=/opt/build no-tests ; \
     fi && \
     make all -j8 && make install_sw && \
-    cd / && rm -rf /build
+    cd / && rm -rf /build && \
+    cd /etc/ssl && ls -la
 
 # do make
 COPY . /build/smartdns/
