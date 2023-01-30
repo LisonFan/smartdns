@@ -49,7 +49,7 @@ extern "C" {
 #define DNS_NAX_GROUP_NUMBER 16
 #define DNS_MAX_IPLEN 64
 #define DNS_PROXY_MAX_LEN 128
-#define DNS_CONF_USRNAME_LEN 32
+#define DNS_CONF_USERNAME_LEN 32
 #define DNS_MAX_SPKI_LEN 64
 #define DNS_MAX_URL_LEN 256
 #define DNS_MAX_PATH 1024
@@ -120,7 +120,6 @@ typedef enum {
 struct dns_rule {
 	atomic_t refcnt;
 	enum domain_rule rule;
-	char rule_data[];
 };
 
 struct dns_rule_flags {
@@ -329,17 +328,6 @@ struct dns_domain_set_rule {
 	unsigned int is_clear_flag;
 };
 
-struct dns_domain_set_rule_list {
-	struct hlist_node node;
-	char domain_set[DNS_MAX_CNAME_LEN];
-	struct list_head domain_ruls_list;
-};
-
-struct dns_domain_set_rule_table {
-	DECLARE_HASHTABLE(rule_list, 4);
-};
-extern struct dns_domain_set_rule_table dns_domain_set_rule_table;
-
 enum dns_domain_set_type {
 	DNS_DOMAIN_SET_LIST = 0,
 	DNS_DOMAIN_SET_GEOSITE = 1,
@@ -360,6 +348,16 @@ struct dns_domain_set_name_table {
 	DECLARE_HASHTABLE(names, 4);
 };
 extern struct dns_domain_set_name_table dns_domain_set_name_table;
+
+struct dns_set_rule_add_callback_args {
+	enum domain_rule type;
+	void *rule;
+};
+
+struct dns_set_rule_flags_callback_args {
+	unsigned int flags;
+	int is_clear_flag;
+};
 
 extern struct dns_bind_ip dns_conf_bind_ip[DNS_MAX_BIND_IP];
 extern int dns_conf_bind_ip_num;
@@ -430,7 +428,7 @@ extern int dns_conf_local_ttl;
 
 extern int dns_conf_force_no_cname;
 
-extern char dns_conf_user[DNS_CONF_USRNAME_LEN];
+extern char dns_conf_user[DNS_CONF_USERNAME_LEN];
 
 extern struct dns_edns_client_subnet dns_conf_ipv4_ecs;
 extern struct dns_edns_client_subnet dns_conf_ipv6_ecs;
@@ -449,7 +447,7 @@ int dns_server_check_update_hosts(void);
 
 struct dns_proxy_names *dns_server_get_proxy_nams(const char *proxyname);
 
-extern int config_addtional_file(void *data, int argc, char *argv[]);
+extern int config_additional_file(void *data, int argc, char *argv[]);
 #ifdef __cpluscplus
 }
 #endif

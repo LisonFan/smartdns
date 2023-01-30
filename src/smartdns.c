@@ -148,7 +148,7 @@ static void _help(void)
 		"  -p [pid]      pid file path, '-' means don't create pid file.\n"
 		"  -S            ignore segment fault signal.\n"
 		"  -x            verbose screen.\n"
-		"  -v            dispaly version.\n"
+		"  -v            display version.\n"
 		"  -h            show this help message.\n"
 
 		"Online help: http://pymumu.github.io/smartdns\n"
@@ -177,7 +177,7 @@ static int _smartdns_load_from_resolv(void)
 {
 	FILE *fp = NULL;
 	char line[MAX_LINE_LEN];
-	char key[MAX_KEY_LEN];
+	char key[MAX_KEY_LEN] = {0};
 	char value[MAX_LINE_LEN];
 	char ns_ip[DNS_MAX_IPLEN];
 	int port = PORT_NOT_DEFINED;
