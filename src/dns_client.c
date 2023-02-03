@@ -42,12 +42,12 @@
 #include <netinet/tcp.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <openssl/rand.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -3524,7 +3524,7 @@ int dns_client_query(const char *domain, int qtype, dns_client_callback callback
 	query->qtype = qtype;
 	query->send_tick = 0;
 	query->has_result = 0;
-	if (getrandom(&query->sid, sizeof(query->sid), GRND_NONBLOCK) != sizeof(query->sid)) {
+	if (RAND_bytes((unsigned char *)&query->sid, sizeof(query->sid)) != 1) {
 		query->sid = random();
 	}
 	query->server_group = _dns_client_get_dnsserver_group(group_name);
@@ -3862,10 +3862,12 @@ static void *_dns_client_work(void *arg)
 				sleep_time = 0;
 			}
 		}
-		last = now;
 
 		if (now >= expect_time) {
-			_dns_client_period_run();
+			if (last != now) {
+				_dns_client_period_run();
+			}
+
 			sleep_time = sleep - (now - expect_time);
 			if (sleep_time < 0) {
 				sleep_time = 0;
@@ -3873,6 +3875,7 @@ static void *_dns_client_work(void *arg)
 			}
 			expect_time += sleep;
 		}
+		last = now;
 
 		pthread_mutex_lock(&client.domain_map_lock);
 		if (list_empty(&client.dns_request_list) && atomic_read(&client.run_period) == 0) {

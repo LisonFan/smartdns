@@ -387,6 +387,11 @@ static int _dns_server_is_return_soa(struct dns_request *request)
 	unsigned int flags = 0;
 
 	if (_dns_server_has_bind_flag(request, BIND_FLAG_NO_RULE_SOA) == 0) {
+		/* when both has no rule SOA and force AAAA soa, foce AAAA soa has high priority */
+		if (request->qtype == DNS_T_AAAA && _dns_server_has_bind_flag(request, BIND_FLAG_FORCE_AAAA_SOA) == 0) {
+			return 1;
+		}
+
 		return 0;
 	}
 
@@ -4774,7 +4779,7 @@ static int _dns_server_tcp_recv(struct dns_server_conn_tcp_client *tcpclient)
 			if (errno == EAGAIN) {
 				return RECV_ERROR_AGAIN;
 			}
-			
+
 			if (errno == ECONNRESET) {
 				return RECV_ERROR_CLOSE;
 			}
@@ -5137,7 +5142,7 @@ static void _dns_server_period_run(unsigned int msec)
 	struct dns_request *tmp = NULL;
 	LIST_HEAD(check_list);
 
-	if (msec % 10 == 0) {
+	if ((msec % 10) == 0) {
 		_dns_server_period_run_second();
 	}
 
@@ -5227,11 +5232,12 @@ int dns_server_run(void)
 			expect_time -= cnt * sleep;
 			sleep_time -= cnt * sleep;
 		}
-		last = now;
 
 		if (now >= expect_time) {
 			msec++;
-			_dns_server_period_run(msec);
+			if (last != now) {
+				_dns_server_period_run(msec);
+			}
 			sleep_time = sleep - (now - expect_time);
 			if (sleep_time < 0) {
 				sleep_time = 0;
@@ -5250,6 +5256,7 @@ int dns_server_run(void)
 			pthread_mutex_unlock(&server.request_list_lock);
 			expect_time += sleep;
 		}
+		last = now;
 
 		num = epoll_wait(server.epoll_fd, events, DNS_MAX_EVENTS, sleep_time);
 		if (num < 0) {
