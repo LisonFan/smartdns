@@ -31,7 +31,5 @@ jobs:
           platforms: |
             linux/amd64
             linux/arm64
-            linux/s390x
-            linux/riscv64
           push: true
           tags: lisonfan/smartdns:latest
