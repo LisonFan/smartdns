@@ -83,12 +83,15 @@ typedef enum {
 	DNS_BIND_TYPE_UDP,
 	DNS_BIND_TYPE_TCP,
 	DNS_BIND_TYPE_TLS,
+	DNS_BIND_TYPE_HTTPS,
 } DNS_BIND_TYPE;
 
-#define DOMAIN_CHECK_NONE 0
-#define DOMAIN_CHECK_ICMP 1
-#define DOMAIN_CHECK_TCP 2
-#define DOMAIN_CHECK_NUM 3
+typedef enum {
+	DOMAIN_CHECK_NONE = 0,
+	DOMAIN_CHECK_ICMP = 1,
+	DOMAIN_CHECK_TCP = 2,
+	DOMAIN_CHECK_NUM = 3,
+} DOMAIN_CHECK_TYPE;
 
 #define DOMAIN_FLAG_ADDR_SOA (1 << 0)
 #define DOMAIN_FLAG_ADDR_IPV4_SOA (1 << 1)
@@ -215,7 +218,7 @@ struct dns_server_groups {
 };
 
 struct dns_domain_check_order {
-	char type;
+	DOMAIN_CHECK_TYPE type;
 	unsigned short tcp_port;
 };
 
@@ -342,6 +345,9 @@ struct dns_bind_ip {
 	DNS_BIND_TYPE type;
 	uint32_t flags;
 	char ip[DNS_MAX_IPLEN];
+	const char *ssl_cert_file;
+	const char *ssl_cert_key_file;
+	const char *ssl_cert_key_pass;
 	const char *group;
 };
 
@@ -403,6 +409,10 @@ extern struct dns_dns64 dns_conf_dns_dns64;
 
 extern struct dns_bind_ip dns_conf_bind_ip[DNS_MAX_BIND_IP];
 extern int dns_conf_bind_ip_num;
+
+extern char dns_conf_bind_ca_file[DNS_MAX_PATH];
+extern char dns_conf_bind_ca_key_file[DNS_MAX_PATH];
+extern char dns_conf_bind_ca_key_pass[DNS_MAX_PATH];
 
 extern int dns_conf_tcp_idle_time;
 extern int dns_conf_cachesize;
