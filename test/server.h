@@ -60,11 +60,18 @@ struct ServerRequestContext {
 	uint8_t *request_data;
 	int request_data_len;
 	uint8_t *response_data;
+    struct dns_packet *response_packet;
 	int response_data_max_len;
 	int response_data_len;
 };
 
-using ServerRequest = std::function<bool(struct ServerRequestContext *request)>;
+typedef enum {
+	SERVER_REQUEST_OK = 0,
+	SERVER_REQUEST_ERROR,
+	SERVER_REQUEST_SOA,
+} ServerRequestResult;
+
+using ServerRequest = std::function<ServerRequestResult(struct ServerRequestContext *request)>;
 
 class MockServer
 {
@@ -76,10 +83,12 @@ class MockServer
 	void Stop();
 	bool IsRunning();
 
+	static bool AddIP(struct ServerRequestContext *request, const std::string &domain, const std::string &ip, int ttl = 60);
+
   private:
 	void Run();
 
-	bool GetAddr(const std::string &host, const std::string port, int type, int protocol, struct sockaddr_storage *addr,
+	static bool GetAddr(const std::string &host, const std::string port, int type, int protocol, struct sockaddr_storage *addr,
 				 socklen_t *addrlen);
 	int fd_;
 	std::thread thread_;
