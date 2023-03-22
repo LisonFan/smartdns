@@ -17,6 +17,7 @@
  */
 
 #include "server.h"
+#include "dns_server.h"
 #include "include/utils.h"
 #include "util.h"
 #include <arpa/inet.h>
@@ -106,7 +107,7 @@ void MockServer::Run()
 				request.packet = packet;
 				query_id = packet->head.id;
 				if (packet->head.qr == DNS_QR_QUERY) {
-					struct dns_rrs *rrs = NULL;
+					struct dns_rrs *rrs = nullptr;
 					int rr_count = 0;
 					int qtype = 0;
 					int qclass = 0;
@@ -213,7 +214,7 @@ bool MockServer::GetAddr(const std::string &host, const std::string port, int ty
 
 {
 	struct addrinfo hints;
-	struct addrinfo *result = NULL;
+	struct addrinfo *result = nullptr;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
@@ -231,7 +232,8 @@ errout:
 	if (result) {
 		freeaddrinfo(result);
 	}
-	return NULL;
+
+	return false;
 }
 
 bool MockServer::Start(const std::string &url, ServerRequest callback)
@@ -281,10 +283,18 @@ bool MockServer::Start(const std::string &url, ServerRequest callback)
 	return true;
 }
 
-Server::Server() {}
+Server::Server() {
+	mode_ = Server::CREATE_MODE_FORK;
+}
+
+Server::Server(enum Server::CREATE_MODE mode)
+{
+	mode_ = mode;
+}
 
 bool Server::Start(const std::string &conf, enum CONF_TYPE type)
 {
+	pid_t pid = 0;
 	int fds[2];
 	std::string conf_file;
 
@@ -338,19 +348,35 @@ bool Server::Start(const std::string &conf, enum CONF_TYPE type)
 		return false;
 	}
 
-	pid_t pid = fork();
-	if (pid == 0) {
-		std::vector<std::string> args = {
-			"smartdns", "-f", "-x", "-c", conf_file, "-p", "-",
-		};
-		char *argv[args.size() + 1];
-		for (size_t i = 0; i < args.size(); i++) {
-			argv[i] = (char *)args[i].c_str();
-		}
+	if (mode_ == CREATE_MODE_FORK) {
+		pid = fork();
+		if (pid == 0) {
+			std::vector<std::string> args = {
+				"smartdns", "-f", "-x", "-c", conf_file, "-p", "-",
+			};
+			char *argv[args.size() + 1];
+			for (size_t i = 0; i < args.size(); i++) {
+				argv[i] = (char *)args[i].c_str();
+			}
 
-		smartdns_main(args.size(), argv, fds[1]);
-		_exit(1);
-	} else if (pid < 0) {
+			smartdns_main(args.size(), argv, fds[1]);
+			_exit(1);
+		} else if (pid < 0) {
+			return false;
+		}
+	} else if (mode_ == CREATE_MODE_THREAD) {
+		thread_ = std::thread([&]() {
+			std::vector<std::string> args = {
+				"smartdns", "-f", "-x", "-c", conf_file_, "-p", "-",
+			};
+			char *argv[args.size() + 1];
+			for (size_t i = 0; i < args.size(); i++) {
+				argv[i] = (char *)args[i].c_str();
+			}
+
+			smartdns_main(args.size(), argv, fds[1]);
+		});
+	} else {
 		return false;
 	}
 
@@ -360,7 +386,13 @@ bool Server::Start(const std::string &conf, enum CONF_TYPE type)
 
 	int ret = poll(pfd, 1, 10000);
 	if (ret == 0) {
-		kill(pid, SIGKILL);
+		if (thread_.joinable()) {
+			thread_.join();
+		}
+
+		if (pid > 0) {
+			kill(pid, SIGKILL);
+		}
 		return false;
 	}
 
@@ -370,6 +402,11 @@ bool Server::Start(const std::string &conf, enum CONF_TYPE type)
 
 void Server::Stop(bool graceful)
 {
+	if (thread_.joinable()) {
+		dns_server_stop();
+		thread_.join();
+	}
+
 	if (pid_ > 0) {
 		if (graceful) {
 			kill(pid_, SIGTERM);
@@ -378,7 +415,7 @@ void Server::Stop(bool graceful)
 		}
 	}
 
-	waitpid(pid_, NULL, 0);
+	waitpid(pid_, nullptr, 0);
 
 	pid_ = 0;
 	if (clean_conf_file_ == true) {
@@ -394,7 +431,7 @@ bool Server::IsRunning()
 		return false;
 	}
 
-	if (waitpid(pid_, NULL, WNOHANG) == 0) {
+	if (waitpid(pid_, nullptr, WNOHANG) == 0) {
 		return true;
 	}
 
