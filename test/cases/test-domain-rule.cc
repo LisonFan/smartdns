@@ -22,34 +22,38 @@
 #include "server.h"
 #include "gtest/gtest.h"
 
-class Cname : public ::testing::Test
+class DomainRule : public ::testing::Test
 {
   protected:
 	virtual void SetUp() {}
 	virtual void TearDown() {}
 };
 
-TEST_F(Cname, cname)
+TEST_F(DomainRule, bogus_nxdomain)
 {
 	smartdns::MockServer server_upstream;
+	smartdns::MockServer server_upstream2;
 	smartdns::Server server;
 
 	server_upstream.Start("udp://0.0.0.0:61053", [](struct smartdns::ServerRequestContext *request) {
 		if (request->qtype != DNS_T_A) {
 			return smartdns::SERVER_REQUEST_SOA;
 		}
+        if (request->domain == "a.com") {
+            smartdns::MockServer::AddIP(request, request->domain.c_str(), "10.11.12.13", 611);
+            return smartdns::SERVER_REQUEST_OK;
+        }
 
 		smartdns::MockServer::AddIP(request, request->domain.c_str(), "1.2.3.4", 611);
-		EXPECT_EQ(request->domain, "e.com");
 		return smartdns::SERVER_REQUEST_OK;
 	});
 
+    /* this ip will be discard, but is reachable */
+    server.MockPing(PING_TYPE_ICMP, "1.2.3.4", 60, 10);
+
 	server.Start(R"""(bind [::]:60053
-cname /a.com/b.com
-cname /b.com/c.com
-cname /c.com/d.com
-cname /d.com/e.com
-server 127.0.0.1:61053
+server udp://127.0.0.1:61053 -blacklist-ip
+bogus-nxdomain 10.0.0.0/8
 log-num 0
 log-console yes
 log-level debug
@@ -57,9 +61,13 @@ cache-persist no)""");
 	smartdns::Client client;
 	ASSERT_TRUE(client.Query("a.com", 60053));
 	std::cout << client.GetResult() << std::endl;
-	ASSERT_EQ(client.GetAnswerNum(), 2);
+	ASSERT_EQ(client.GetAuthorityNum(), 1);
+	EXPECT_EQ(client.GetStatus(), "NXDOMAIN");
+
+    ASSERT_TRUE(client.Query("b.com", 60053));
+	std::cout << client.GetResult() << std::endl;
+	ASSERT_EQ(client.GetAnswerNum(), 1);
 	EXPECT_EQ(client.GetStatus(), "NOERROR");
-	EXPECT_EQ(client.GetAnswer()[0].GetName(), "a.com");
-	EXPECT_EQ(client.GetAnswer()[0].GetData(), "b.com.");
-	EXPECT_EQ(client.GetAnswer()[1].GetData(), "1.2.3.4");
+	EXPECT_EQ(client.GetAnswer()[0].GetName(), "b.com");
+	EXPECT_EQ(client.GetAnswer()[0].GetData(), "1.2.3.4");
 }
