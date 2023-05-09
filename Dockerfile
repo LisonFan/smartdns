@@ -2,7 +2,7 @@ FROM ubuntu:latest as smartdns-builder
 LABEL previous-stage=smartdns-builder
 
 # prepare builder
-ARG OPENSSL_VER=1.1.1f
+ARG OPENSSL_VER=1.1.1t
 RUN apt-get update && \
     apt-get install -y perl curl make musl-tools musl-dev ca-certificates && \
     ln -s /usr/include/linux /usr/include/$(uname -m)-linux-musl && \
@@ -11,7 +11,7 @@ RUN apt-get update && \
     \
     mkdir -p /build/openssl && \
     cd /build/openssl && \
-    curl -sSL http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_${OPENSSL_VER}.orig.tar.gz | tar --strip-components=1 -zxv && \
+    curl -sSL https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz | tar --strip-components=1 -zxv && \
     \
     export CC=musl-gcc && \
     if [ "$(uname -m)" = "aarch64" ]; then \
@@ -35,7 +35,7 @@ RUN cd /build/smartdns && \
     mkdir -p /release/var/log /release/run && \
     cp package/smartdns/etc /release/ -a && \
     cp package/smartdns/usr /release/ -a && \
-    cp /etc/ssl/ /release//etc/ssl -a && \
+    cp /etc/ssl/ /release/etc/ssl -a && \
     cd / && rm -rf /build
 
 FROM busybox:latest
