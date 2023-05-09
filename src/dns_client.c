@@ -56,7 +56,7 @@
 #include <unistd.h>
 
 #define DNS_MAX_HOSTNAME 256
-#define DNS_MAX_EVENTS 64
+#define DNS_MAX_EVENTS 256
 #define DNS_HOSTNAME_LEN 128
 #define DNS_TCP_BUFFER (32 * 1024)
 #define DNS_TCP_IDLE_TIMEOUT (60 * 10)
@@ -3537,7 +3537,7 @@ static int _dns_client_send_packet(struct dns_query_struct *query, void *packet,
 					 server_info->type);
 				time_t now = 0;
 				time(&now);
-				if (now - 5 > server_info->last_recv || send_err != ENOMEM) {
+				if (now - 10 > server_info->last_recv || send_err != ENOMEM) {
 					server_info->prohibit = 1;
 					tlog(TLOG_INFO, "server %s not alive, prohibit", server_info->ip);
 					_dns_client_shutdown_socket(server_info);

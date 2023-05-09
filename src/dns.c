@@ -913,6 +913,11 @@ int dns_add_SOA(struct dns_packet *packet, dns_rr_type type, const char *domain,
 	unsigned char data[sizeof(*soa)];
 	unsigned char *ptr = data;
 	int len = 0;
+
+	if (soa == NULL || domain == NULL || packet == NULL) {
+		return -1;
+	}
+
 	safe_strncpy((char *)ptr, soa->mname, DNS_MAX_CNAME_LEN);
 	ptr += strnlen(soa->mname, DNS_MAX_CNAME_LEN - 1) + 1;
 	safe_strncpy((char *)ptr, soa->rname, DNS_MAX_CNAME_LEN);
@@ -2152,7 +2157,7 @@ static int _dns_decode_an(struct dns_context *context, dns_rr_type type)
 
 		ret = dns_add_A(packet, type, domain, ttl, addr);
 		if (ret < 0) {
-			tlog(TLOG_ERROR, "add A failed, %s", domain);
+			tlog(TLOG_DEBUG, "add A failed, %s", domain);
 			return -1;
 		}
 	} break;
@@ -2167,7 +2172,7 @@ static int _dns_decode_an(struct dns_context *context, dns_rr_type type)
 
 		ret = dns_add_CNAME(packet, type, domain, ttl, cname);
 		if (ret < 0) {
-			tlog(TLOG_ERROR, "add CNAME failed, %s", domain);
+			tlog(TLOG_DEBUG, "add CNAME failed, %s", domain);
 			return -1;
 		}
 	} break;
@@ -2181,7 +2186,7 @@ static int _dns_decode_an(struct dns_context *context, dns_rr_type type)
 
 		ret = dns_add_SOA(packet, type, domain, ttl, &soa);
 		if (ret < 0) {
-			tlog(TLOG_ERROR, "add SOA failed, %s", domain);
+			tlog(TLOG_DEBUG, "add SOA failed, %s", domain);
 			return -1;
 		}
 	} break;
@@ -2195,7 +2200,7 @@ static int _dns_decode_an(struct dns_context *context, dns_rr_type type)
 
 		ret = dns_add_NS(packet, type, domain, ttl, ns);
 		if (ret < 0) {
-			tlog(TLOG_ERROR, "add NS failed, %s", domain);
+			tlog(TLOG_DEBUG, "add NS failed, %s", domain);
 			return -1;
 		}
 	} break;
@@ -2209,7 +2214,7 @@ static int _dns_decode_an(struct dns_context *context, dns_rr_type type)
 
 		ret = dns_add_PTR(packet, type, domain, ttl, name);
 		if (ret < 0) {
-			tlog(TLOG_ERROR, "add PTR failed, %s", domain);
+			tlog(TLOG_DEBUG, "add PTR failed, %s", domain);
 			return -1;
 		}
 	} break;
@@ -2223,7 +2228,7 @@ static int _dns_decode_an(struct dns_context *context, dns_rr_type type)
 
 		ret = dns_add_AAAA(packet, type, domain, ttl, addr);
 		if (ret < 0) {
-			tlog(TLOG_ERROR, "add AAAA failed, %s", domain);
+			tlog(TLOG_DEBUG, "add AAAA failed, %s", domain);
 			return -1;
 		}
 	} break;
@@ -2270,7 +2275,7 @@ static int _dns_decode_an(struct dns_context *context, dns_rr_type type)
 
 		ret = _dns_add_RAW(packet, type, qtype, domain, ttl, raw_data, rr_len);
 		if (ret < 0) {
-			tlog(TLOG_ERROR, "add raw failed, %s", domain);
+			tlog(TLOG_DEBUG, "add raw failed, %s", domain);
 			return -1;
 		}
 
@@ -2280,7 +2285,7 @@ static int _dns_decode_an(struct dns_context *context, dns_rr_type type)
 	}
 
 	if (context->ptr - start != rr_len) {
-		tlog(TLOG_ERROR, "length mismatch, %s, %ld:%d", domain, (long)(context->ptr - start), rr_len);
+		tlog(TLOG_DEBUG, "length mismatch, %s, %ld:%d", domain, (long)(context->ptr - start), rr_len);
 		return -1;
 	}
 
