@@ -28,9 +28,9 @@
 #include "hashtable.h"
 #include "list.h"
 #include "rbtree.h"
+#include "timer.h"
 #include "tlog.h"
 #include "util.h"
-#include "timer.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -157,7 +157,7 @@ static void _help(void)
 		"  -v            display version.\n"
 		"  -h            show this help message.\n"
 
-		"Online help: http://pymumu.github.io/smartdns\n"
+		"Online help: https://pymumu.github.io/smartdns\n"
 		"Copyright (C) Nick Peng <pymumu@gmail.com>\n"
 		;
 	/* clang-format on */
@@ -573,7 +573,6 @@ static int _smartdns_run(void)
 
 static void _smartdns_exit(void)
 {
-	tlog(TLOG_INFO, "smartdns exit...");
 	dns_client_exit();
 	proxy_exit();
 	fast_ping_exit();
@@ -768,12 +767,13 @@ int main(int argc, char *argv[])
 	int opt = 0;
 	char config_file[MAX_LINE_LEN];
 	char pid_file[MAX_LINE_LEN];
+	int is_pid_file_set = 0;
 	int signal_ignore = 0;
 	sigset_t empty_sigblock;
 	struct stat sb;
 
 	static struct option long_options[] = {
-		{"cache-print", required_argument, 0, 256}, {"help", no_argument, 0, 'h'}, {NULL, 0, 0, 0}};
+		{"cache-print", required_argument, NULL, 256}, {"help", no_argument, NULL, 'h'}, {NULL, 0, NULL, 0}};
 
 	safe_strncpy(config_file, SMARTDNS_CONF_FILE, MAX_LINE_LEN);
 
@@ -788,7 +788,7 @@ int main(int argc, char *argv[])
 	sigprocmask(SIG_SETMASK, &empty_sigblock, NULL);
 	smartdns_close_allfds();
 
-	while ((opt = getopt_long(argc, argv, "fhc:p:SvxN:", long_options, 0)) != -1) {
+	while ((opt = getopt_long(argc, argv, "fhc:p:SvxN:", long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'f':
 			is_run_as_daemon = 0;
@@ -801,6 +801,7 @@ int main(int argc, char *argv[])
 		case 'p':
 			if (strncmp(optarg, "-", 2) == 0 || full_path(pid_file, sizeof(pid_file), optarg) != 0) {
 				snprintf(pid_file, sizeof(pid_file), "%s", optarg);
+				is_pid_file_set = 1;
 			}
 			break;
 		case 'S':
@@ -829,6 +830,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	srand(time(NULL));
+
 	ret = dns_server_load_conf(config_file);
 	if (ret != 0) {
 		fprintf(stderr, "load config failed.\n");
@@ -855,6 +858,16 @@ int main(int argc, char *argv[])
 
 	if (signal_ignore == 0) {
 		_reg_signal();
+	}
+
+	if (is_pid_file_set == 0) {
+		char pid_file_path[MAX_LINE_LEN];
+		safe_strncpy(pid_file_path, pid_file, MAX_LINE_LEN);
+		dir_name(pid_file_path);
+
+		if (access(pid_file_path, W_OK) != 0) {
+			dns_no_pidfile = 1;
+		}
 	}
 
 	if (strncmp(pid_file, "-", 2) != 0 && dns_no_pidfile == 0 && create_pid_file(pid_file) != 0) {
@@ -889,6 +902,7 @@ int main(int argc, char *argv[])
 
 	smartdns_test_notify(1);
 	ret = _smartdns_run();
+	tlog(TLOG_INFO, "smartdns exit...");
 	_smartdns_exit();
 	return ret;
 errout:
@@ -896,5 +910,6 @@ errout:
 		daemon_kickoff(ret, dns_conf_log_console | verbose_screen);
 	}
 	smartdns_test_notify(2);
+	_smartdns_exit();
 	return 1;
 }
