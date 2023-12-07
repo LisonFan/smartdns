@@ -1632,6 +1632,23 @@ errout:
 	return;
 }
 
+void daemon_close_stdfds(void)
+{
+	int fd_null = open("/dev/null", O_RDWR);
+	if (fd_null < 0) {
+		fprintf(stderr, "open /dev/null failed, %s\n", strerror(errno));
+		return;
+	}
+
+	dup2(fd_null, STDIN_FILENO);
+	dup2(fd_null, STDOUT_FILENO);
+	dup2(fd_null, STDERR_FILENO);
+
+	if (fd_null > 2) {
+		close(fd_null);
+	}
+}
+
 int daemon_kickoff(int status, int no_close)
 {
 	struct daemon_msg msg;
@@ -1650,19 +1667,7 @@ int daemon_kickoff(int status, int no_close)
 	}
 
 	if (no_close == 0) {
-		int fd_null = open("/dev/null", O_RDWR);
-		if (fd_null < 0) {
-			fprintf(stderr, "open /dev/null failed, %s\n", strerror(errno));
-			return -1;
-		}
-
-		dup2(fd_null, STDIN_FILENO);
-		dup2(fd_null, STDOUT_FILENO);
-		dup2(fd_null, STDERR_FILENO);
-
-		if (fd_null > 2) {
-			close(fd_null);
-		}
+		daemon_close_stdfds();
 	}
 
 	close(daemon_fd);
@@ -1698,7 +1703,7 @@ int daemon_keepalive(void)
 	return 0;
 }
 
-int daemon_run(void)
+daemon_ret daemon_run(int *wstatus)
 {
 	pid_t pid = 0;
 	int fds[2] = {0};
@@ -1748,11 +1753,16 @@ int daemon_run(void)
 				pid = msg.value;
 				continue;
 			} else if (msg.type == DAEMON_MSG_KICKOFF) {
-				return msg.value;
+				if (wstatus != NULL) {
+					*wstatus = msg.value;
+				}
+				return DAEMON_RET_PARENT_OK;
 			} else {
 				goto errout;
 			}
 		} while (true);
+
+		return DAEMON_RET_ERR;
 	}
 
 	setsid();
@@ -1777,10 +1787,13 @@ int daemon_run(void)
 	close(fds[0]);
 
 	daemon_fd = fds[1];
-	return -2;
+	return DAEMON_RET_CHILD_OK;
 errout:
 	kill(pid, SIGKILL);
-	return -1;
+	if (wstatus != NULL) {
+		*wstatus = -1;
+	}
+	return DAEMON_RET_ERR;
 }
 
 #ifdef DEBUG
