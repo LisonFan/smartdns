@@ -163,8 +163,10 @@ int dns_conf_force_AAAA_SOA;
 int dns_conf_force_no_cname;
 int dns_conf_ipset_timeout_enable;
 struct dns_ipset_names dns_conf_ipset_no_speed;
+struct dns_ipset_names dns_conf_ipset;
 int dns_conf_nftset_timeout_enable;
 struct dns_nftset_names dns_conf_nftset_no_speed;
+struct dns_nftset_names dns_conf_nftset;
 int dns_conf_nftset_debug_enable;
 int dns_conf_mdns_lookup;
 
@@ -318,10 +320,15 @@ static int _get_domain(char *value, char *domain, int max_domain_size, char **pt
 	}
 
 	size_t domain_len = max_domain_size;
-	domain_len = utf8_to_punycode(begin, len, domain, domain_len);
-	if (domain_len <= 0) {
-		tlog(TLOG_ERROR, "domain name %s invalid", value);
-		goto errout;
+	if (strncmp(begin, "domain-set:", sizeof("domain-set:") - 1) == 0) {
+		memcpy(domain, begin, len);
+		domain_len = len;
+	} else {
+		domain_len = utf8_to_punycode(begin, len, domain, domain_len);
+		if (domain_len <= 0) {
+			tlog(TLOG_ERROR, "domain name %s invalid", value);
+			goto errout;
+		}
 	}
 
 	domain[domain_len] = '\0';
@@ -559,6 +566,7 @@ static int _config_server(int argc, char *argv[], dns_server_type_t type, int de
 		{"proxy", required_argument, NULL, 'p'}, /* proxy server */
 		{"no-check-certificate", no_argument, NULL, 'k'}, /* do not check certificate */
 		{"bootstrap-dns", no_argument, NULL, 'b'}, /* set as bootstrap dns */
+		{"interface", required_argument, NULL, 250}, /* interface */
 #ifdef FEATURE_CHECK_EDNS
 		/* experimental feature */
 		{"check-edns", no_argument, NULL, 251},   /* check edns */
@@ -665,6 +673,10 @@ static int _config_server(int argc, char *argv[], dns_server_type_t type, int de
 		}
 		case 'b': {
 			is_bootstrap_dns = 1;
+			break;
+		}
+		case 250: {
+			safe_strncpy(server->ifname, optarg, MAX_INTERFACE_LEN);
 			break;
 		}
 		case 251: {
@@ -882,21 +894,28 @@ static int _config_set_rule_each_from_list(const char *file, set_rule_add_func c
 	return ret;
 }
 
+static struct dns_domain_set_name_list *_config_get_domain_set_name_list(const char *name)
+{
+	uint32_t key = 0;
+	struct dns_domain_set_name_list *set_name_list = NULL;
+
+	key = hash_string(name);
+	hash_for_each_possible(dns_domain_set_name_table.names, set_name_list, node, key)
+	{
+		if (strcmp(set_name_list->name, name) == 0) {
+			return set_name_list;
+		}
+	}
+
+	return NULL;
+}
+
 static int _config_domain_rule_set_each(const char *domain_set, set_rule_add_func callback, void *priv)
 {
 	struct dns_domain_set_name_list *set_name_list = NULL;
 	struct dns_domain_set_name *set_name_item = NULL;
 
-	uint32_t key = 0;
-
-	key = hash_string(domain_set);
-	hash_for_each_possible(dns_domain_set_name_table.names, set_name_list, node, key)
-	{
-		if (strcmp(set_name_list->name, domain_set) == 0) {
-			break;
-		}
-	}
-
+	set_name_list = _config_get_domain_set_name_list(domain_set);
 	if (set_name_list == NULL) {
 		tlog(TLOG_WARN, "domain set %s not found.", domain_set);
 		return -1;
@@ -1218,6 +1237,7 @@ static int _conf_domain_rule_ipset(char *domain, const char *ipsetname)
 	char *copied_name = NULL;
 	enum domain_rule type = 0;
 	int ignore_flag = 0;
+	int ret = -1;
 
 	copied_name = strdup(ipsetname);
 
@@ -1267,6 +1287,7 @@ static int _conf_domain_rule_ipset(char *domain, const char *ipsetname)
 		ipset_rule = NULL;
 	}
 
+	ret = 0;
 	goto clear;
 
 errout:
@@ -1281,42 +1302,18 @@ clear:
 		free(copied_name);
 	}
 
-	return 0;
+	return ret;
 }
 
-static int _config_ipset(void *data, int argc, char *argv[])
+static int _config_ipset_setvalue(struct dns_ipset_names *ipsets, const char *ipsetvalue)
 {
-	char domain[DNS_MAX_CONF_CNAME_LEN];
-	char *value = argv[1];
-
-	if (argc <= 1) {
-		goto errout;
-	}
-
-	if (_get_domain(value, domain, DNS_MAX_CONF_CNAME_LEN, &value) != 0) {
-		goto errout;
-	}
-
-	return _conf_domain_rule_ipset(domain, value);
-errout:
-	tlog(TLOG_ERROR, "add ipset %s failed", value);
-	return 0;
-}
-
-static int _config_ipset_no_speed(void *data, int argc, char *argv[])
-{
-	char *ipsetname = argv[1];
 	char *copied_name = NULL;
 	const char *ipset = NULL;
 	struct dns_ipset_rule *ipset_rule_array[2] = {NULL, NULL};
 	char *ipset_rule_enable_array[2] = {NULL, NULL};
 	int ipset_num = 0;
 
-	if (argc <= 1) {
-		goto errout;
-	}
-
-	copied_name = strdup(ipsetname);
+	copied_name = strdup(ipsetvalue);
 
 	if (copied_name == NULL) {
 		goto errout;
@@ -1325,12 +1322,12 @@ static int _config_ipset_no_speed(void *data, int argc, char *argv[])
 	for (char *tok = strtok(copied_name, ","); tok && ipset_num <= 2; tok = strtok(NULL, ",")) {
 		if (tok[0] == '#') {
 			if (strncmp(tok, "#6:", 3U) == 0) {
-				ipset_rule_array[ipset_num] = &dns_conf_ipset_no_speed.ipv6;
-				ipset_rule_enable_array[ipset_num] = &dns_conf_ipset_no_speed.ipv6_enable;
+				ipset_rule_array[ipset_num] = &ipsets->ipv6;
+				ipset_rule_enable_array[ipset_num] = &ipsets->ipv6_enable;
 				ipset_num++;
 			} else if (strncmp(tok, "#4:", 3U) == 0) {
-				ipset_rule_array[ipset_num] = &dns_conf_ipset_no_speed.ipv4;
-				ipset_rule_enable_array[ipset_num] = &dns_conf_ipset_no_speed.ipv4_enable;
+				ipset_rule_array[ipset_num] = &ipsets->ipv4;
+				ipset_rule_enable_array[ipset_num] = &ipsets->ipv4_enable;
 				ipset_num++;
 			} else {
 				goto errout;
@@ -1339,11 +1336,9 @@ static int _config_ipset_no_speed(void *data, int argc, char *argv[])
 		}
 
 		if (ipset_num == 0) {
-			ipset_rule_array[1] = &dns_conf_ipset_no_speed.ipv6;
-			ipset_rule_enable_array[1] = &dns_conf_ipset_no_speed.ipv6_enable;
-			ipset_rule_array[0] = &dns_conf_ipset_no_speed.ipv4;
-			ipset_rule_enable_array[0] = &dns_conf_ipset_no_speed.ipv4_enable;
-			ipset_num = 2;
+			ipset_rule_array[0] = &ipsets->inet;
+			ipset_rule_enable_array[0] = &ipsets->inet_enable;
+			ipset_num = 1;
 		}
 
 		if (strncmp(tok, "-", 1) == 0) {
@@ -1371,6 +1366,57 @@ errout:
 		free(copied_name);
 	}
 
+	return 0;
+}
+
+static int _config_ipset(void *data, int argc, char *argv[])
+{
+	char domain[DNS_MAX_CONF_CNAME_LEN];
+	char *value = argv[1];
+	int ret = 0;
+
+	if (argc <= 1) {
+		goto errout;
+	}
+
+	if (_get_domain(value, domain, DNS_MAX_CONF_CNAME_LEN, &value) != 0) {
+		if (strstr(value, "/")) {
+			goto errout;
+		}
+
+		if (_config_ipset_setvalue(&dns_conf_ipset, value) != 0) {
+			ret = -1;
+			goto errout;
+		}
+
+		return 0;
+	}
+
+	ret = _conf_domain_rule_ipset(domain, value);
+	if (ret != 0) {
+		goto errout;
+	}
+
+	return 0;
+errout:
+	tlog(TLOG_WARN, "add ipset %s failed.", value);
+	return ret;
+}
+
+static int _config_ipset_no_speed(void *data, int argc, char *argv[])
+{
+	char *ipsetname = argv[1];
+
+	if (argc <= 1) {
+		goto errout;
+	}
+
+	if (_config_ipset_setvalue(&dns_conf_ipset_no_speed, ipsetname) != 0) {
+		goto errout;
+	}
+
+	return 0;
+errout:
 	tlog(TLOG_ERROR, "add ipset-no-speed %s failed", ipsetname);
 	return 0;
 }
@@ -1544,23 +1590,23 @@ errout:
 	return 0;
 }
 
-static int _config_nftset_no_speed(void *data, int argc, char *argv[])
+static int _config_nftset_setvalue(struct dns_nftset_names *nftsets, const char *nftsetvalue)
 {
 	const struct dns_nftset_name *nftset = NULL;
 	char *copied_name = NULL;
-	char *nftsetname = argv[1];
 	int nftset_num = 0;
 	char *setname = NULL;
 	char *tablename = NULL;
 	char *family = NULL;
+	int ret = -1;
 	struct dns_nftset_rule *nftset_rule_array[2] = {NULL, NULL};
 	char *nftset_rule_enable_array[2] = {NULL, NULL};
 
-	if (argc <= 1) {
+	if (nftsetvalue == NULL) {
 		goto errout;
 	}
 
-	copied_name = strdup(nftsetname);
+	copied_name = strdup(nftsetvalue);
 
 	if (copied_name == NULL) {
 		goto errout;
@@ -1571,13 +1617,13 @@ static int _config_nftset_no_speed(void *data, int argc, char *argv[])
 		char *tok_set = NULL;
 
 		if (strncmp(tok, "#4:", 3U) == 0) {
-			dns_conf_nftset_no_speed.ip_enable = 1;
-			nftset_rule_array[nftset_num] = &dns_conf_nftset_no_speed.ip;
-			nftset_rule_enable_array[nftset_num] = &dns_conf_nftset_no_speed.ip_enable;
+			nftsets->ip_enable = 1;
+			nftset_rule_array[nftset_num] = &nftsets->ip;
+			nftset_rule_enable_array[nftset_num] = &nftsets->ip_enable;
 			nftset_num++;
 		} else if (strncmp(tok, "#6:", 3U) == 0) {
-			nftset_rule_enable_array[nftset_num] = &dns_conf_nftset_no_speed.ip6_enable;
-			nftset_rule_array[nftset_num] = &dns_conf_nftset_no_speed.ip6;
+			nftset_rule_enable_array[nftset_num] = &nftsets->ip6_enable;
+			nftset_rule_array[nftset_num] = &nftsets->ip6;
 			nftset_num++;
 		} else if (strncmp(tok, "-", 2U) == 0) {
 			continue;
@@ -1589,10 +1635,10 @@ static int _config_nftset_no_speed(void *data, int argc, char *argv[])
 		tok_set = tok + 3;
 
 		if (nftset_num == 0) {
-			nftset_rule_array[0] = &dns_conf_nftset_no_speed.ip;
-			nftset_rule_enable_array[0] = &dns_conf_nftset_no_speed.ip_enable;
-			nftset_rule_array[1] = &dns_conf_nftset_no_speed.ip6;
-			nftset_rule_enable_array[1] = &dns_conf_nftset_no_speed.ip6_enable;
+			nftset_rule_array[0] = &nftsets->ip;
+			nftset_rule_enable_array[0] = &nftsets->ip_enable;
+			nftset_rule_array[1] = &nftsets->ip6;
+			nftset_rule_enable_array[1] = &nftsets->ip6_enable;
 			nftset_num = 2;
 		}
 
@@ -1631,15 +1677,34 @@ static int _config_nftset_no_speed(void *data, int argc, char *argv[])
 		nftset_num = 0;
 	}
 
+	ret = 0;
 	goto clear;
 
 errout:
-	tlog(TLOG_ERROR, "add nftset %s failed", nftsetname);
+	ret = -1;
 clear:
 	if (copied_name) {
 		free(copied_name);
 	}
 
+	return ret;
+}
+
+static int _config_nftset_no_speed(void *data, int argc, char *argv[])
+{
+	char *nftsetname = argv[1];
+
+	if (argc <= 1) {
+		goto errout;
+	}
+
+	if (_config_nftset_setvalue(&dns_conf_nftset_no_speed, nftsetname) != 0) {
+		goto errout;
+	}
+
+	return 0;
+errout:
+	tlog(TLOG_ERROR, "add nftset %s failed", nftsetname);
 	return 0;
 }
 
@@ -2281,6 +2346,8 @@ static int _config_bind_ip(int argc, char *argv[], DNS_BIND_TYPE type)
 		{"no-dualstack-selection", no_argument, NULL, 'D'},
 		{"no-ip-alias", no_argument, NULL, 'a'},
 		{"force-aaaa-soa", no_argument, NULL, 'F'},
+		{"no-serve-expired", no_argument, NULL, 253},
+		{"force-https-soa", no_argument, NULL, 254},
 		{"ipset", required_argument, NULL, 255},
 		{"nftset", required_argument, NULL, 256},
 		{NULL, no_argument, NULL, 0}
@@ -2370,12 +2437,26 @@ static int _config_bind_ip(int argc, char *argv[], DNS_BIND_TYPE type)
 			server_flag |= BIND_FLAG_FORCE_AAAA_SOA;
 			break;
 		}
+		case 253: {
+			server_flag |= BIND_FLAG_NO_SERVE_EXPIRED;
+			break;
+		}
+		case 254: {
+			server_flag |= BIND_FLAG_FORCE_HTTPS_SOA;
+			break;
+		}
 		case 255: {
 			_config_bind_ip_parser_ipset(bind_ip, &server_flag, optarg);
+			server_flag |= BIND_FLAG_NO_DUALSTACK_SELECTION;
+			server_flag |= BIND_FLAG_NO_PREFETCH;
+			server_flag |= BIND_FLAG_NO_SERVE_EXPIRED;
 			break;
 		}
 		case 256: {
 			_config_bind_ip_parser_nftset(bind_ip, &server_flag, optarg);
+			server_flag |= BIND_FLAG_NO_DUALSTACK_SELECTION;
+			server_flag |= BIND_FLAG_NO_PREFETCH;
+			server_flag |= BIND_FLAG_NO_SERVE_EXPIRED;
 			break;
 		}
 		default:
@@ -3660,6 +3741,7 @@ static int _conf_domain_rules(void *data, int argc, char *argv[])
 		{"ipset", required_argument, NULL, 'p'},
 		{"nftset", required_argument, NULL, 't'},
 		{"nameserver", required_argument, NULL, 'n'},
+		{"group", required_argument, NULL, 'n'},
 		{"dualstack-ip-selection", required_argument, NULL, 'd'},
 		{"cname", required_argument, NULL, 'A'},
 		{"rr-ttl", required_argument, NULL, 251},
@@ -3680,6 +3762,16 @@ static int _conf_domain_rules(void *data, int argc, char *argv[])
 
 	if (_get_domain(value, domain, DNS_MAX_CONF_CNAME_LEN, &value) != 0) {
 		goto errout;
+	}
+
+	/* check domain set exists. */
+	if (strncmp(domain, "domain-set:", sizeof("domain-set:") - 1) == 0) {
+		const char *set_name = domain + sizeof("domain-set:") - 1;
+		struct dns_domain_set_name_list *name = _config_get_domain_set_name_list(set_name);
+		if (name == NULL) {
+			tlog(TLOG_ERROR, "domain set '%s' not found.", set_name);
+			goto errout;
+		}
 	}
 
 	/* process extra options */
@@ -4149,9 +4241,152 @@ static int _conf_dhcp_lease_dnsmasq_file(void *data, int argc, char *argv[])
 	return 0;
 }
 
+static int _config_foreach_file(const char *file_pattern, int (*callback)(const char *file, void *priv), void *priv)
+{
+	char file_path[DNS_MAX_PATH];
+	char file_path_dir[DNS_MAX_PATH];
+	glob_t globbuf = {0};
+
+	if (file_pattern == NULL) {
+		return -1;
+	}
+
+	if (file_pattern[0] != '/') {
+		safe_strncpy(file_path_dir, conf_get_conf_file(), DNS_MAX_PATH);
+		dir_name(file_path_dir);
+		if (strncmp(file_path_dir, conf_get_conf_file(), sizeof(file_path_dir)) == 0) {
+			if (snprintf(file_path, DNS_MAX_PATH, "%s", file_pattern) < 0) {
+				return -1;
+			}
+		} else {
+			if (snprintf(file_path, DNS_MAX_PATH, "%s/%s", file_path_dir, file_pattern) < 0) {
+				return -1;
+			}
+		}
+	} else {
+		safe_strncpy(file_path, file_pattern, DNS_MAX_PATH);
+	}
+
+	errno = 0;
+	if (glob(file_path, 0, NULL, &globbuf) != 0) {
+		if (errno == 0) {
+			return 0;
+		}
+
+		tlog(TLOG_ERROR, "open config file '%s' failed, %s", file_path, strerror(errno));
+		return -1;
+	}
+
+	for (size_t i = 0; i != globbuf.gl_pathc; ++i) {
+		const char *file = globbuf.gl_pathv[i];
+		struct stat statbuf;
+
+		if (stat(file, &statbuf) != 0) {
+			continue;
+		}
+
+		if (!S_ISREG(statbuf.st_mode)) {
+			continue;
+		}
+
+		if (callback(file, priv) != 0) {
+			tlog(TLOG_ERROR, "load config file '%s' failed.", file);
+			globfree(&globbuf);
+			return -1;
+		}
+	}
+
+	globfree(&globbuf);
+
+	return 0;
+}
+
+static int _conf_hosts_file_add(const char *file, void *priv)
+{
+	FILE *fp = NULL;
+	char line[MAX_LINE_LEN];
+	char ip[DNS_MAX_IPLEN];
+	char hostname[DNS_MAX_CNAME_LEN];
+	int ret = 0;
+	int line_no = 0;
+
+	fp = fopen(file, "r");
+	if (fp == NULL) {
+		tlog(TLOG_WARN, "open file %s error, %s", file, strerror(errno));
+		return -1;
+	}
+
+	line_no = 0;
+	while (fgets(line, MAX_LINE_LEN, fp)) {
+		line_no++;
+		int is_ptr_add = 0;
+
+		char *token = strtok(line, " \t\n");
+		if (token == NULL) {
+			continue;
+		}
+
+		safe_strncpy(ip, token, sizeof(ip) - 1);
+		if (ip[0] == '#') {
+			continue;
+		}
+
+		while ((token = strtok(NULL, " \t\n")) != NULL) {
+			safe_strncpy(hostname, token, sizeof(hostname) - 1);
+			char *skip_hostnames[] = {
+				"*",
+			};
+
+			int skip = 0;
+			for (size_t i = 0; i < sizeof(skip_hostnames) / sizeof(skip_hostnames[0]); i++) {
+				if (strncmp(hostname, skip_hostnames[i], DNS_MAX_CNAME_LEN - 1) == 0) {
+					skip = 1;
+					break;
+				}
+			}
+
+			if (skip == 1) {
+				continue;
+			}
+
+			ret = _conf_host_add(hostname, ip, DNS_HOST_TYPE_HOST, 0);
+			if (ret != 0) {
+				tlog(TLOG_WARN, "add hosts-file failed at '%s:%d'.", file, line_no);
+				continue;
+			}
+
+			if (is_ptr_add == 1) {
+				continue;
+			}
+
+			ret = _conf_ptr_add(hostname, ip, 0);
+			if (ret != 0) {
+				tlog(TLOG_WARN, "add hosts-file failed at '%s:%d'.", file, line_no);
+				continue;
+			}
+
+			is_ptr_add = 1;
+		}
+	}
+
+	fclose(fp);
+
+	return 0;
+}
+
 static int _conf_hosts_file(void *data, int argc, char *argv[])
 {
-	return 0;
+	const char *file_pattern = NULL;
+	if (argc < 1) {
+		return -1;
+	}
+
+	file_pattern = argv[1];
+	if (file_pattern == NULL) {
+		return -1;
+	}
+
+	return _config_foreach_file(file_pattern, _conf_hosts_file_add, NULL);
 }
 
 static void _config_host_table_destroy(int only_dynamic)
@@ -4464,13 +4699,14 @@ static int conf_additional_file(const char *conf_file)
 	return load_conf(file_path, _config_item, _conf_printf);
 }
 
+static int _config_additional_file_callback(const char *file, void *priv)
+{
+	return conf_additional_file(file);
+}
+
 int config_additional_file(void *data, int argc, char *argv[])
 {
 	const char *conf_pattern = NULL;
-	char file_path[DNS_MAX_PATH];
-	char file_path_dir[DNS_MAX_PATH];
-	glob_t globbuf = {0};
-
 	if (argc < 1) {
 		return -1;
 	}
@@ -4480,54 +4716,7 @@ int config_additional_file(void *data, int argc, char *argv[])
 		return -1;
 	}
 
-	if (conf_pattern[0] != '/') {
-		safe_strncpy(file_path_dir, conf_get_conf_file(), DNS_MAX_PATH);
-		dir_name(file_path_dir);
-		if (strncmp(file_path_dir, conf_get_conf_file(), sizeof(file_path_dir)) == 0) {
-			if (snprintf(file_path, DNS_MAX_PATH, "%s", conf_pattern) < 0) {
-				return -1;
-			}
-		} else {
-			if (snprintf(file_path, DNS_MAX_PATH, "%s/%s", file_path_dir, conf_pattern) < 0) {
-				return -1;
-			}
-		}
-	} else {
-		safe_strncpy(file_path, conf_pattern, DNS_MAX_PATH);
-	}
-
-	errno = 0;
-	if (glob(file_path, 0, NULL, &globbuf) != 0) {
-		if (errno == 0) {
-			return 0;
-		}
-
-		tlog(TLOG_ERROR, "open config file '%s' failed, %s", file_path, strerror(errno));
-		return -1;
-	}
-
-	for (size_t i = 0; i != globbuf.gl_pathc; ++i) {
-		const char *file = globbuf.gl_pathv[i];
-		struct stat statbuf;
-
-		if (stat(file, &statbuf) != 0) {
-			continue;
-		}
-
-		if (!S_ISREG(statbuf.st_mode)) {
-			continue;
-		}
-
-		if (conf_additional_file(file) != 0) {
-			tlog(TLOG_ERROR, "load config file '%s' failed.", file);
-			globfree(&globbuf);
-			return -1;
-		}
-	}
-
-	globfree(&globbuf);
-
-	return 0;
+	return _config_foreach_file(conf_pattern, _config_additional_file_callback, NULL);
 }
 
 const char *dns_conf_get_cache_dir(void)

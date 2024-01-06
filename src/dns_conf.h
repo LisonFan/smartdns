@@ -61,6 +61,7 @@ extern "C" {
 #define DNS_MAX_REPLY_IP_NUM 8
 #define DNS_MAX_QUERY_LIMIT 65535
 #define DNS_DEFAULT_CHECKPOINT_TIME (3600 * 24)
+#define MAX_INTERFACE_LEN 16
 
 #define SMARTDNS_CONF_FILE "/etc/smartdns/smartdns.conf"
 #define SMARTDNS_LOG_FILE "/var/log/smartdns/smartdns.log"
@@ -147,6 +148,9 @@ typedef enum {
 #define BIND_FLAG_NO_RULE_CNAME (1 << 9)
 #define BIND_FLAG_NO_RULE_NFTSET (1 << 10)
 #define BIND_FLAG_NO_IP_ALIAS (1 << 11)
+#define BIND_FLAG_NO_PREFETCH (1 << 12)
+#define BIND_FLAG_FORCE_HTTPS_SOA (1 << 13)
+#define BIND_FLAG_NO_SERVE_EXPIRED (1 << 14)
 
 enum response_mode_type {
 	DNS_RESPONSE_MODE_FIRST_PING_IP = 0,
@@ -188,12 +192,15 @@ struct dns_ipset_rule {
 };
 
 struct dns_ipset_names {
+	char inet_enable;
 	char ipv4_enable;
 	char ipv6_enable;
+	struct dns_ipset_rule inet;
 	struct dns_ipset_rule ipv4;
 	struct dns_ipset_rule ipv6;
 };
 extern struct dns_ipset_names dns_conf_ipset_no_speed;
+extern struct dns_ipset_names dns_conf_ipset;
 
 struct dns_cname_rule {
 	struct dns_rule head;
@@ -230,6 +237,7 @@ struct dns_nftset_names {
 	struct dns_nftset_rule ip6;
 };
 extern struct dns_nftset_names dns_conf_nftset_no_speed;
+extern struct dns_nftset_names dns_conf_nftset;
 
 struct dns_domain_rule {
 	struct dns_rule head;
@@ -340,6 +348,7 @@ struct dns_servers {
 	char tls_host_verify[DNS_MAX_CNAME_LEN];
 	char path[DNS_MAX_URL_LEN];
 	char proxyname[PROXY_NAME_LEN];
+	char ifname[MAX_INTERFACE_LEN];
 	struct dns_edns_client_subnet ipv4_ecs;
 	struct dns_edns_client_subnet ipv6_ecs;
 };
