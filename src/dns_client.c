@@ -280,6 +280,7 @@ static LIST_HEAD(pending_servers);
 static pthread_mutex_t pending_server_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int dns_client_has_bootstrap_dns = 0;
 
+static void _dns_client_retry_dns_query(struct dns_query_struct *query);
 static int _dns_client_send_udp(struct dns_server_info *server_info, void *packet, int len);
 static void _dns_client_clear_wakeup_event(void);
 static void _dns_client_do_wakeup_event(void);
@@ -615,7 +616,7 @@ static struct dns_server_group *_dns_client_get_dnsserver_group(const char *grou
 		goto use_default;
 	} else {
 		if (list_empty(&group->head)) {
-			tlog(TLOG_INFO, "group %s not exist, use default group.", group_name);
+			tlog(TLOG_DEBUG, "group %s not exist, use default group.", group_name);
 			goto use_default;
 		}
 	}
@@ -1845,17 +1846,21 @@ static int _dns_client_recv(struct dns_server_info *server_info, unsigned char *
 	if (query->callback) {
 		ret = query->callback(query->domain, DNS_QUERY_RESULT, server_info, packet, inpacket, inpacket_len,
 							  query->user_ptr);
-		if (request_num == 0 && ret == 0) {
-			/* if all server replied, or done, stop query, release resource */
-			_dns_client_query_remove(query);
-		}
 
-		if (ret == 0) {
-			query->has_result = 1;
-		} else {
+		if (ret == DNS_CLIENT_ACTION_RETRY || ret == DNS_CLIENT_ACTION_DROP) {
 			/* remove this result */
 			_dns_replied_check_remove(query, from, from_len);
 			atomic_inc(&query->dns_request_sent);
+			if (ret == DNS_CLIENT_ACTION_RETRY) {
+				/* retry immdiately */
+				_dns_client_retry_dns_query(query);
+			}
+		} else {
+			query->has_result = 1;
+			if (request_num == 0) {
+				/* if all server replied, or done, stop query, release resource */
+				_dns_client_query_remove(query);
+			}
 		}
 	}
 
@@ -4036,6 +4041,19 @@ static int _dns_client_query_parser_options(struct dns_query_struct *query, stru
 	return 0;
 }
 
+static void _dns_client_retry_dns_query(struct dns_query_struct *query)
+{
+	if (atomic_dec_and_test(&query->retry_count) || (query->has_result != 0)) {
+		_dns_client_query_remove(query);
+		if (query->has_result == 0) {
+			tlog(TLOG_DEBUG, "retry query %s, type: %d, id: %d failed", query->domain, query->qtype, query->sid);
+		}
+	} else {
+		tlog(TLOG_DEBUG, "retry query %s, type: %d, id: %d", query->domain, query->qtype, query->sid);
+		_dns_client_send_query(query);
+	}
+}
+
 static int _dns_client_add_hashmap(struct dns_query_struct *query)
 {
 	uint32_t key = 0;
@@ -4439,16 +4457,7 @@ static void _dns_client_period_run(unsigned int msec)
 		if (atomic_read(&query->retry_count) == 1) {
 			_dns_client_check_udp_nat(query);
 		}
-
-		if (atomic_dec_and_test(&query->retry_count) || (query->has_result != 0)) {
-			_dns_client_query_remove(query);
-			if (query->has_result == 0) {
-				tlog(TLOG_DEBUG, "retry query %s, type: %d, id: %d failed", query->domain, query->qtype, query->sid);
-			}
-		} else {
-			tlog(TLOG_DEBUG, "retry query %s, type: %d, id: %d", query->domain, query->qtype, query->sid);
-			_dns_client_send_query(query);
-		}
+		_dns_client_retry_dns_query(query);
 		_dns_client_query_release(query);
 	}
 

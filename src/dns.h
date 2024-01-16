@@ -27,7 +27,7 @@ extern "C" {
 #define DNS_RR_AAAA_LEN 16
 #define DNS_MAX_CNAME_LEN 256
 #define DNS_MAX_OPT_LEN 256
-#define DNS_IN_PACKSIZE (512 * 8)
+#define DNS_IN_PACKSIZE (512 * 16)
 #define DNS_PACKSIZE (512 * 16)
 #define DNS_DEFAULT_PACKET_SIZE 512
 #define DNS_MAX_ALPN_LEN 32
@@ -149,12 +149,12 @@ struct dns_head {
 struct dns_packet_dict_item {
 	unsigned short pos;
 	unsigned int hash;
-};
+} __attribute__((packed));
 
 struct dns_packet_dict {
 	short dict_count;
 	struct dns_packet_dict_item names[DNS_PACKET_DICT_SIZE];
-};
+} __attribute__((packed));
 
 /* packet head */
 struct dns_packet {
@@ -179,7 +179,7 @@ struct dns_rrs {
 	unsigned short len;
 	int type;
 	unsigned char data[0];
-};
+} __attribute__((packed));
 
 /* packet encode/decode context */
 struct dns_context {
