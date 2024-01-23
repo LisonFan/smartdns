@@ -1,6 +1,6 @@
 /*************************************************************************
  *
- * Copyright (C) 2018-2023 Ruilin Peng (Nick) <pymumu@gmail.com>.
+ * Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
  *
  * smartdns is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -496,6 +496,19 @@ void dns_cache_data_get(struct dns_cache_data *cache_data)
 	return;
 }
 
+void dns_cache_flush(void)
+{
+	struct dns_cache *dns_cache = NULL;
+	struct dns_cache *tmp = NULL;
+
+	pthread_mutex_lock(&dns_cache_head.lock);
+	list_for_each_entry_safe(dns_cache, tmp, &dns_cache_head.cache_list, list)
+	{
+		_dns_cache_remove(dns_cache);
+	}
+	pthread_mutex_unlock(&dns_cache_head.lock);
+}
+
 void dns_cache_data_put(struct dns_cache_data *cache_data)
 {
 	if (cache_data == NULL) {
@@ -569,9 +582,10 @@ static int _dns_cache_read_to_cache(struct dns_cache_record *cache_record, struc
 		info->replace_time = now;
 	}
 
-	expired_time = dns_conf_serve_expired_prefetch_time;
+	struct dns_conf_group *rule_group = dns_server_get_rule_group(info->dns_group_name);
+	expired_time = rule_group->dns_serve_expired_prefetch_time;
 	if (expired_time == 0) {
-		expired_time = dns_conf_serve_expired_ttl / 2;
+		expired_time = rule_group->dns_serve_expired_ttl / 2;
 		if (expired_time == 0 || expired_time > EXPIRED_DOMAIN_PREFETCH_TIME) {
 			expired_time = EXPIRED_DOMAIN_PREFETCH_TIME;
 		}
@@ -852,19 +866,11 @@ int dns_cache_print(const char *file)
 
 void dns_cache_destroy(void)
 {
-	struct dns_cache *dns_cache = NULL;
-	struct dns_cache *tmp = NULL;
-
 	if (is_cache_init == 0) {
 		return;
 	}
 
-	pthread_mutex_lock(&dns_cache_head.lock);
-	list_for_each_entry_safe(dns_cache, tmp, &dns_cache_head.cache_list, list)
-	{
-		_dns_cache_remove(dns_cache);
-	}
-	pthread_mutex_unlock(&dns_cache_head.lock);
+	dns_cache_flush();
 
 	pthread_mutex_destroy(&dns_cache_head.lock);
 	hash_table_free(dns_cache_head.cache_hash, free);

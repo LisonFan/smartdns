@@ -1,6 +1,6 @@
 /*************************************************************************
  *
- * Copyright (C) 2018-2023 Ruilin Peng (Nick) <pymumu@gmail.com>.
+ * Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
  *
  * smartdns is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1526,12 +1526,6 @@ return view.extend({
 			});
 		};
 
-		// other args
-		so = ss.option(form.Value, "addition_flag", _("Additional Rule Flag"),
-			_("Additional Flags for rules, read help on ip-rule for more information."))
-		so.default = ""
-		so.rempty = true
-		so.modalonly = true;
 
 		////////////////
 		// ip rules;
@@ -1602,6 +1596,12 @@ return view.extend({
 		so.datatype = 'ipaddr("nomask")';
 		so.modalonly = true;
 
+		// other args
+		so = ss.option(form.Value, "addition_flag", _("Additional Rule Flag"),
+			_("Additional Flags for rules, read help on ip-rule for more information."))
+		so.default = ""
+		so.rempty = true
+		so.modalonly = true;
 		///////////////////////////////////////
 		// IP Blacklist;
 		///////////////////////////////////////

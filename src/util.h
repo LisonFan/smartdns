@@ -1,6 +1,6 @@
 /*************************************************************************
  *
- * Copyright (C) 2018-2023 Ruilin Peng (Nick) <pymumu@gmail.com>.
+ * Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
  *
  * smartdns is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -110,7 +110,7 @@ void SSL_CRYPTO_thread_cleanup(void);
 
 unsigned char *SSL_SHA256(const unsigned char *d, size_t n, unsigned char *md);
 
-int SSL_base64_decode(const char *in, unsigned char *out);
+int SSL_base64_decode(const char *in, unsigned char *out, int max_outlen);
 
 int SSL_base64_encode(const void *in, int in_len, char *out);
 

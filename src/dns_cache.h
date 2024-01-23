@@ -1,6 +1,6 @@
 /*************************************************************************
  *
- * Copyright (C) 2018-2023 Ruilin Peng (Nick) <pymumu@gmail.com>.
+ * Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
  *
  * smartdns is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -165,6 +165,8 @@ struct dns_cache_data *dns_cache_get_data(struct dns_cache *dns_cache);
 void dns_cache_data_get(struct dns_cache_data *cache_data);
 
 void dns_cache_data_put(struct dns_cache_data *cache_data);
+
+void dns_cache_flush(void);
 
 void dns_cache_destroy(void);
 

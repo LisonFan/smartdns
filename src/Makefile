@@ -1,5 +1,5 @@
 
-# Copyright (C) 2018-2023 Ruilin Peng (Nick) <pymumu@gmail.com>.
+# Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
 #
 # smartdns is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -48,13 +48,11 @@ endif
 CXXFLAGS=-O2 -g -Wall -std=c++11 
 override CXXFLAGS +=-Iinclude
 
-# ldflags
 ifeq ($(STATIC), yes)
- override LDFLAGS += -lssl -lcrypto -Wl,--whole-archive -lpthread -Wl,--no-whole-archive -ldl -lm -static
-else ifeq ($(SSL_STATIC), yes)
- override LDFLAGS += -Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic -lpthread -ldl -lm
+ override CFLAGS += -DBUILD_STATIC
+ override LDFLAGS += -lssl -lcrypto -Wl,--whole-archive -lpthread -Wl,--no-whole-archive -ldl -lm -static -rdynamic
 else
- override LDFLAGS += -lssl -lcrypto -lpthread -ldl -lm
+ override LDFLAGS += -lssl -lcrypto -lpthread -ldl -lm -rdynamic
 endif
 
 .PHONY: all clean

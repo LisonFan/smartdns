@@ -1,6 +1,6 @@
 /*************************************************************************
  *
- * Copyright (C) 2018-2023 Ruilin Peng (Nick) <pymumu@gmail.com>.
+ * Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
  *
  * smartdns is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -884,11 +884,11 @@ static void _dns_client_group_remove_all(void)
 	}
 }
 
-int dns_client_spki_decode(const char *spki, unsigned char *spki_data_out)
+int dns_client_spki_decode(const char *spki, unsigned char *spki_data_out, int spki_data_out_max_len)
 {
 	int spki_data_len = -1;
 
-	spki_data_len = SSL_base64_decode(spki, spki_data_out);
+	spki_data_len = SSL_base64_decode(spki, spki_data_out, spki_data_out_max_len);
 
 	if (spki_data_len != SHA256_DIGEST_LENGTH) {
 		return -1;
