@@ -153,6 +153,7 @@ static int dns_conf_expand_ptr_from_address = 0;
 int dns_conf_local_ttl;
 int dns_conf_nftset_debug_enable;
 int dns_conf_mdns_lookup;
+int dns_conf_local_ptr_enable = 1;
 int dns_conf_acl_enable;
 
 char dns_conf_user[DNS_CONF_USERNAME_LEN];
@@ -162,6 +163,8 @@ char dns_save_fail_packet_dir[DNS_MAX_PATH];
 char dns_resolv_file[DNS_MAX_PATH];
 int dns_no_pidfile;
 int dns_no_daemon;
+int dns_restart_on_crash;
+size_t dns_socket_buff_size;
 
 struct hash_table conf_file_table;
 struct conf_file_path {
@@ -694,6 +697,10 @@ static int _config_current_group_pop_all(void)
 		_config_current_group_pop();
 	}
 
+	if (dns_conf_default_group_info == NULL) {
+		return 0;
+	}
+
 	list_del(&dns_conf_default_group_info->list);
 	free(dns_conf_default_group_info);
 	dns_conf_default_group_info = NULL;
@@ -711,6 +718,7 @@ static int _config_group_end(void *data, int argc, char *argv[])
 static int _config_group_match(void *data, int argc, char *argv[])
 {
 	int opt = 0;
+	int optind_last = 0;
 	struct dns_conf_group_info *saved_group_info = dns_conf_current_group_info;
 	const char *group_name = saved_group_info->group_name;
 	char group_name_buf[DNS_MAX_CONF_CNAME_LEN];
@@ -769,10 +777,13 @@ static int _config_group_match(void *data, int argc, char *argv[])
 			break;
 		}
 		default:
-			tlog(TLOG_WARN, "unknown group-match option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
-				 conf_get_current_lineno());
+			if (optind > optind_last) {
+				tlog(TLOG_WARN, "unknown group-match option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
+					 conf_get_current_lineno());
+			}
 			break;
 		}
+		optind_last = optind;
 	}
 
 	dns_conf_current_group_info = saved_group_info;
@@ -890,6 +901,7 @@ static int _config_server(int argc, char *argv[], dns_server_type_t type, int de
 	char *ip = NULL;
 	char scheme[DNS_MAX_CNAME_LEN] = {0};
 	int opt = 0;
+	int optind_last = 0;
 	unsigned int result_flag = 0;
 	unsigned int server_flag = 0;
 	unsigned char *spki = NULL;
@@ -988,6 +1000,7 @@ static int _config_server(int argc, char *argv[], dns_server_type_t type, int de
 
 	/* process extra options */
 	optind = 1;
+	optind_last = 1;
 	while (1) {
 		opt = getopt_long_only(argc, argv, "D:kg:p:eb", long_options, NULL);
 		if (opt == -1) {
@@ -1085,10 +1098,14 @@ static int _config_server(int argc, char *argv[], dns_server_type_t type, int de
 			break;
 		}
 		default:
-			tlog(TLOG_WARN, "unknown server option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
-				 conf_get_current_lineno());
+			if (optind > optind_last) {
+				tlog(TLOG_WARN, "unknown server option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
+					 conf_get_current_lineno());
+			}
 			break;
 		}
+
+		optind_last = optind;
 	}
 
 	if (check_is_ipaddr(server->server) != 0) {
@@ -1824,14 +1841,6 @@ errout:
 	return 0;
 }
 
-static int _config_ipset_timeout(void *data, int argc, char *argv[])
-{
-	struct config_item_yesno item;
-
-	item.data = &_config_current_rule_group()->ipset_nftset.ipset_timeout_enable;
-	return conf_yesno(NULL, &item, argc, argv);
-}
-
 static int _config_ipset(void *data, int argc, char *argv[])
 {
 	char domain[DNS_MAX_CONF_CNAME_LEN];
@@ -1873,14 +1882,6 @@ static int _config_ipset_no_speed(void *data, int argc, char *argv[])
 errout:
 	tlog(TLOG_ERROR, "add ipset-no-speed %s failed", ipsetname);
 	return 0;
-}
-
-static int _config_nftset_timeout(void *data, int argc, char *argv[])
-{
-	struct config_item_yesno item;
-
-	item.data = &_config_current_rule_group()->ipset_nftset.nftset_timeout_enable;
-	return conf_yesno(NULL, &item, argc, argv);
 }
 
 static void _config_nftset_table_destroy(void)
@@ -2796,6 +2797,8 @@ static int _config_bind_ip(int argc, char *argv[], DNS_BIND_TYPE type)
 	struct dns_bind_ip *bind_ip = NULL;
 	char *ip = NULL;
 	int opt = 0;
+	int optind = 0;
+	int optind_last = 0;
 	char group_name[DNS_GROUP_NAME_LEN];
 	const char *group = NULL;
 	unsigned int server_flag = 0;
@@ -2859,6 +2862,7 @@ static int _config_bind_ip(int argc, char *argv[], DNS_BIND_TYPE type)
 
 	/* process extra options */
 	optind = 1;
+	optind_last = 1;
 	while (1) {
 		opt = getopt_long_only(argc, argv, "", long_options, NULL);
 		if (opt == -1) {
@@ -2942,10 +2946,14 @@ static int _config_bind_ip(int argc, char *argv[], DNS_BIND_TYPE type)
 			break;
 		}
 		default:
-			tlog(TLOG_WARN, "unknown bind option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
-				 conf_get_current_lineno());
+			if (optind > optind_last) {
+				tlog(TLOG_WARN, "unknown bind option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
+					 conf_get_current_lineno());
+			}
 			break;
 		}
+
+		optind_last = optind;
 	}
 
 	/* add new server */
@@ -4297,6 +4305,7 @@ static int _conf_ip_alias(void *data, int argc, char *argv[])
 static int _conf_ip_rules(void *data, int argc, char *argv[])
 {
 	int opt = 0;
+	int optind_last = 0;
 	char *ip_cidr = argv[1];
 
 	/* clang-format off */
@@ -4317,6 +4326,7 @@ static int _conf_ip_rules(void *data, int argc, char *argv[])
 
 	/* process extra options */
 	optind = 1;
+	optind_last = 1;
 	while (1) {
 		opt = getopt_long_only(argc, argv, "", long_options, NULL);
 		if (opt == -1) {
@@ -4355,10 +4365,14 @@ static int _conf_ip_rules(void *data, int argc, char *argv[])
 			break;
 		}
 		default:
-			tlog(TLOG_WARN, "unknown ip-rules option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
-				 conf_get_current_lineno());
+			if (optind > optind_last) {
+				tlog(TLOG_WARN, "unknown ip-rules option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
+					 conf_get_current_lineno());
+			}
 			break;
 		}
+
+		optind_last = optind;
 	}
 
 	return 0;
@@ -4595,6 +4609,8 @@ static int _conf_domain_rule_no_ipalias(const char *domain)
 static int _conf_domain_rules(void *data, int argc, char *argv[])
 {
 	int opt = 0;
+	int optind = 0;
+	int optind_last = 0;
 	char domain[DNS_MAX_CONF_CNAME_LEN];
 	char *value = argv[1];
 	int rr_ttl = 0;
@@ -4660,6 +4676,7 @@ static int _conf_domain_rules(void *data, int argc, char *argv[])
 
 	/* process extra options */
 	optind = 1;
+	optind_last = 1;
 	while (1) {
 		opt = getopt_long_only(argc, argv, "c:a:p:t:n:d:A:r:g:", long_options, NULL);
 		if (opt == -1) {
@@ -4820,10 +4837,14 @@ static int _conf_domain_rules(void *data, int argc, char *argv[])
 			break;
 		}
 		default:
-			tlog(TLOG_WARN, "unknown domain-rules option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
-				 conf_get_current_lineno());
+			if (optind > optind_last) {
+				tlog(TLOG_WARN, "unknown domain-rules option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
+					 conf_get_current_lineno());
+			}
 			break;
 		}
+
+		optind_last = optind;
 	}
 
 	if (rr_ttl > 0 || rr_ttl_min > 0 || rr_ttl_max > 0) {
@@ -5343,6 +5364,7 @@ errout:
 static int _config_client_rules(void *data, int argc, char *argv[])
 {
 	int opt = 0;
+	int optind_last = 0;
 	const char *client = argv[1];
 	unsigned int server_flag = 0;
 	const char *group = NULL;
@@ -5380,6 +5402,7 @@ static int _config_client_rules(void *data, int argc, char *argv[])
 
 	/* process extra options */
 	optind = 1;
+	optind_last = 1;
 	while (1) {
 		opt = getopt_long_only(argc, argv, "g:", long_options, NULL);
 		if (opt == -1) {
@@ -5448,10 +5471,14 @@ static int _config_client_rules(void *data, int argc, char *argv[])
 			break;
 		}
 		default:
-			tlog(TLOG_WARN, "unknown client-rules option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
-				 conf_get_current_lineno());
+			if (optind > optind_last) {
+				tlog(TLOG_WARN, "unknown client-rules option: %s at '%s:%d'.", argv[optind - 1], conf_get_conf_file(),
+					 conf_get_current_lineno());
+			}
 			break;
 		}
+
+		optind_last = optind;
 	}
 
 	if (group != NULL) {
@@ -5676,16 +5703,19 @@ static struct config_item _config_item[] = {
 	CONF_CUSTOM("server-tls", _config_server_tls, NULL),
 	CONF_CUSTOM("server-https", _config_server_https, NULL),
 	CONF_YESNO("mdns-lookup", &dns_conf_mdns_lookup),
+	CONF_YESNO("local-ptr-enable", &dns_conf_local_ptr_enable),
 	CONF_CUSTOM("nameserver", _config_nameserver, NULL),
 	CONF_YESNO("expand-ptr-from-address", &dns_conf_expand_ptr_from_address),
 	CONF_CUSTOM("address", _config_address, NULL),
 	CONF_CUSTOM("cname", _config_cname, NULL),
 	CONF_CUSTOM("srv-record", _config_srv_record, NULL),
 	CONF_CUSTOM("proxy-server", _config_proxy_server, NULL),
-	CONF_CUSTOM("ipset-timeout", _config_ipset_timeout, NULL),
+	CONF_YESNO_FUNC("ipset-timeout", _dns_conf_group_yesno,
+					(void *)offsetof(struct dns_conf_group, ipset_nftset.ipset_timeout_enable)),
 	CONF_CUSTOM("ipset", _config_ipset, NULL),
 	CONF_CUSTOM("ipset-no-speed", _config_ipset_no_speed, NULL),
-	CONF_CUSTOM("nftset-timeout", _config_nftset_timeout, NULL),
+	CONF_YESNO_FUNC("nftset-timeout", _dns_conf_group_yesno,
+					(void *)offsetof(struct dns_conf_group, ipset_nftset.nftset_timeout_enable)),
 	CONF_YESNO("nftset-debug", &dns_conf_nftset_debug_enable),
 	CONF_CUSTOM("nftset", _config_nftset, NULL),
 	CONF_CUSTOM("nftset-no-speed", _config_nftset_no_speed, NULL),
@@ -5767,6 +5797,8 @@ static struct config_item _config_item[] = {
 	CONF_YESNO("debug-save-fail-packet", &dns_save_fail_packet),
 	CONF_YESNO("no-pidfile", &dns_no_pidfile),
 	CONF_YESNO("no-daemon", &dns_no_daemon),
+	CONF_YESNO("restart-on-crash", &dns_restart_on_crash),
+	CONF_SIZE("socket-buff-size", &dns_socket_buff_size, 0, 1024 * 1024 * 8),
 	CONF_CUSTOM("plugin", _config_plugin, NULL),
 	CONF_STRING("resolv-file", (char *)&dns_resolv_file, sizeof(dns_resolv_file)),
 	CONF_STRING("debug-save-fail-packet-dir", (char *)&dns_save_fail_packet_dir, sizeof(dns_save_fail_packet_dir)),
@@ -5952,7 +5984,10 @@ static int _dns_server_load_conf_init(void)
 	hash_init(dns_conf_srv_record_table.srv);
 	hash_init(dns_conf_plugin_table.plugins);
 
-	_config_current_group_push_default();
+	if (_config_current_group_push_default() != 0) {
+		tlog(TLOG_ERROR, "init default group failed.");
+		return -1;
+	}
 
 	return 0;
 }

@@ -684,6 +684,7 @@ extern enum response_mode_type dns_conf_default_response_mode;
 extern int dns_conf_nftset_debug_enable;
 extern int dns_conf_local_ttl;
 extern int dns_conf_mdns_lookup;
+extern int dns_conf_local_ptr_enable;
 extern int dns_conf_acl_enable;
 
 extern char dns_conf_user[DNS_CONF_USERNAME_LEN];
@@ -696,6 +697,8 @@ extern char dns_resolv_file[DNS_MAX_PATH];
 
 extern int dns_no_pidfile;
 extern int dns_no_daemon;
+extern int dns_restart_on_crash;
+extern size_t dns_socket_buff_size;
 
 void dns_server_load_exit(void);
 

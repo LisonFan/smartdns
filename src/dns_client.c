@@ -1943,6 +1943,10 @@ static int _dns_client_create_socket_udp_proxy(struct dns_server_info *server_in
 
 	set_fd_nonblock(fd, 1);
 	set_sock_keepalive(fd, 30, 3, 5);
+	if (dns_socket_buff_size > 0) {
+		setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &dns_socket_buff_size, sizeof(dns_socket_buff_size));
+		setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &dns_socket_buff_size, sizeof(dns_socket_buff_size));
+	}
 
 	ret = proxy_conn_connect(proxy);
 	if (ret != 0) {
@@ -2042,6 +2046,11 @@ static int _dns_client_create_socket_udp(struct dns_server_info *server_info)
 		setsockopt(server_info->fd, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &on, sizeof(on));
 		setsockopt(server_info->fd, IPPROTO_IPV6, IPV6_2292HOPLIMIT, &on, sizeof(on));
 		setsockopt(server_info->fd, IPPROTO_IPV6, IPV6_HOPLIMIT, &on, sizeof(on));
+	}
+
+	if (dns_socket_buff_size > 0) {
+		setsockopt(server_info->fd, SOL_SOCKET, SO_SNDBUF, &dns_socket_buff_size, sizeof(dns_socket_buff_size));
+		setsockopt(server_info->fd, SOL_SOCKET, SO_RCVBUF, &dns_socket_buff_size, sizeof(dns_socket_buff_size));
 	}
 
 	return 0;
@@ -2184,6 +2193,10 @@ static int _DNS_client_create_socket_tcp(struct dns_server_info *server_info)
 	setsockopt(fd, IPPROTO_TCP, TCP_THIN_DUPACK, &yes, sizeof(yes));
 	setsockopt(fd, IPPROTO_TCP, TCP_THIN_LINEAR_TIMEOUTS, &yes, sizeof(yes));
 	set_sock_keepalive(fd, 30, 3, 5);
+	if (dns_socket_buff_size > 0) {
+		setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &dns_socket_buff_size, sizeof(dns_socket_buff_size));
+		setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &dns_socket_buff_size, sizeof(dns_socket_buff_size));
+	}
 
 	if (proxy) {
 		ret = proxy_conn_connect(proxy);
@@ -2304,6 +2317,10 @@ static int _DNS_client_create_socket_tls(struct dns_server_info *server_info, ch
 	set_sock_keepalive(fd, 30, 3, 5);
 	setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &priority, sizeof(priority));
 	setsockopt(fd, IPPROTO_IP, IP_TOS, &ip_tos, sizeof(ip_tos));
+	if (dns_socket_buff_size > 0) {
+		setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &dns_socket_buff_size, sizeof(dns_socket_buff_size));
+		setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &dns_socket_buff_size, sizeof(dns_socket_buff_size));
+	}
 
 	if (proxy) {
 		ret = proxy_conn_connect(proxy);
@@ -2466,7 +2483,16 @@ static int _dns_client_process_udp_proxy(struct dns_server_info *server_info, st
 
 	len = proxy_conn_recvfrom(server_info->proxy, inpacket, sizeof(inpacket), 0, (struct sockaddr *)&from, &from_len);
 	if (len < 0) {
-		tlog(TLOG_ERROR, "recvfrom failed, %s\n", strerror(errno));
+		if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			return 0;
+		}
+
+		if (errno == ECONNREFUSED || errno == ENETUNREACH || errno == EHOSTUNREACH) {
+			tlog(TLOG_DEBUG, "recvfrom %s failed, %s\n", server_info->ip, strerror(errno));
+			goto errout;
+		}
+
+		tlog(TLOG_ERROR, "recvfrom %s failed, %s\n", server_info->ip, strerror(errno));
 		goto errout;
 	} else if (len == 0) {
 		pthread_mutex_lock(&client.server_list_lock);
@@ -2543,6 +2569,7 @@ static int _dns_client_process_udp(struct dns_server_info *server_info, struct e
 			return 0;
 		}
 
+		server_info->prohibit = 1;
 		if (errno == ECONNREFUSED || errno == ENETUNREACH || errno == EHOSTUNREACH) {
 			tlog(TLOG_DEBUG, "recvfrom %s failed, %s\n", server_info->ip, strerror(errno));
 			goto errout;
@@ -2632,7 +2659,8 @@ static int _dns_client_socket_ssl_send(struct dns_server_info *server, const voi
 		errno = EAGAIN;
 		ret = -SSL_ERROR_WANT_WRITE;
 		break;
-	case SSL_ERROR_SSL:
+	case SSL_ERROR_SSL: {
+		char buff[256];
 		ssl_err = ERR_get_error();
 		int ssl_reason = ERR_GET_REASON(ssl_err);
 		if (ssl_reason == SSL_R_UNINITIALIZED || ssl_reason == SSL_R_PROTOCOL_IS_SHUTDOWN ||
@@ -2642,10 +2670,10 @@ static int _dns_client_socket_ssl_send(struct dns_server_info *server, const voi
 			return -1;
 		}
 
-		tlog(TLOG_ERROR, "SSL write fail error no:  %s(%d)\n", ERR_reason_error_string(ssl_err), ssl_reason);
+		tlog(TLOG_ERROR, "server %s SSL write fail error: %s", server->ip, ERR_error_string(ssl_err, buff));
 		errno = EFAULT;
 		ret = -1;
-		break;
+	} break;
 	case SSL_ERROR_SYSCALL:
 		tlog(TLOG_DEBUG, "SSL syscall failed, %s", strerror(errno));
 		return ret;
@@ -2688,7 +2716,9 @@ static int _dns_client_socket_ssl_recv(struct dns_server_info *server, void *buf
 		errno = EAGAIN;
 		ret = -SSL_ERROR_WANT_WRITE;
 		break;
-	case SSL_ERROR_SSL:
+	case SSL_ERROR_SSL: {
+		char buff[256];
+
 		ssl_err = ERR_get_error();
 		int ssl_reason = ERR_GET_REASON(ssl_err);
 		if (ssl_reason == SSL_R_UNINITIALIZED) {
@@ -2706,11 +2736,10 @@ static int _dns_client_socket_ssl_recv(struct dns_server_info *server, void *buf
 		}
 #endif
 
-		tlog(TLOG_WARN, "SSL read fail error no: %s(%lx), reason: %d\n", ERR_reason_error_string(ssl_err), ssl_err,
-			 ssl_reason);
+		tlog(TLOG_ERROR, "server %s SSL read fail error: %s", server->ip, ERR_error_string(ssl_err, buff));
 		errno = EFAULT;
 		ret = -1;
-		break;
+	} break;
 	case SSL_ERROR_SYSCALL:
 		if (errno == 0) {
 			return 0;

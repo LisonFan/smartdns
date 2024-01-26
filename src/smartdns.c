@@ -177,18 +177,28 @@ static void _help(void)
 	printf("%s", help);
 }
 
-static void _show_version(void)
+static void _smartdns_get_version(char *str_ver, int str_ver_len)
 {
-	char str_ver[256] = {0};
+	char commit_ver[TMP_BUFF_LEN_32] = {0};
+#ifdef COMMIT_VERION
+	snprintf(commit_ver, sizeof(commit_ver), " (%s)", COMMIT_VERION);
+#endif
+
 #ifdef SMARTDNS_VERION
 	const char *ver = SMARTDNS_VERION;
-	snprintf(str_ver, sizeof(str_ver), "%s", ver);
+	snprintf(str_ver, str_ver_len, "%s%s", ver, commit_ver);
 #else
 	struct tm tm;
 	get_compiled_time(&tm);
-	snprintf(str_ver, sizeof(str_ver), "1.%.4d%.2d%.2d-%.2d%.2d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-			 tm.tm_hour, tm.tm_min);
+	snprintf(str_ver, str_ver_len, "1.%.4d%.2d%.2d-%.2d%.2d%s", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+			 tm.tm_hour, tm.tm_min, commit_ver);
 #endif
+}
+
+static void _show_version(void)
+{
+	char str_ver[256] = {0};
+	_smartdns_get_version(str_ver, sizeof(str_ver));
 	printf("smartdns %s\n", str_ver);
 }
 
@@ -618,14 +628,16 @@ errout:
 static int _smartdns_init(void)
 {
 	int ret = 0;
+	char str_ver[256] = {0};
 
 	if (_smartdns_init_log() != 0) {
 		tlog(TLOG_ERROR, "init log failed.");
 		goto errout;
 	}
 
-	tlog(TLOG_NOTICE, "smartdns starting...(Copyright (C) Nick Peng <pymumu@gmail.com>, build: %s %s)", __DATE__,
-		 __TIME__);
+	_smartdns_get_version(str_ver, sizeof(str_ver));
+
+	tlog(TLOG_NOTICE, "smartdns starting...(Copyright (C) Nick Peng <pymumu@gmail.com>, build: %s)", str_ver);
 
 	if (dns_timer_init() != 0) {
 		tlog(TLOG_ERROR, "init timer failed.");
@@ -975,6 +987,17 @@ void smartdns_restart(void)
 	exit_restart = 1;
 }
 
+static int smartdns_enter_monitor_mode(int argc, char *argv[], int no_deamon)
+{
+	setenv("SMARTDNS_RESTART_ON_CRASH", "1", 1);
+	if (no_deamon == 1) {
+		setenv("SMARTDNS_NO_DAEMON", "1", 1);
+	}
+	execv(argv[0], argv);
+	tlog(TLOG_ERROR, "execv failed, %s", strerror(errno));
+	return -1;
+}
+
 #ifdef TEST
 
 static smartdns_post_func _smartdns_post = NULL;
@@ -1084,6 +1107,16 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (getenv("SMARTDNS_RESTART_ON_CRASH") != NULL) {
+		restart_when_crash = 1;
+		unsetenv("SMARTDNS_RESTART_ON_CRASH");
+	}
+
+	if (getenv("SMARTDNS_NO_DAEMON") != NULL) {
+		is_run_as_daemon = 0;
+		unsetenv("SMARTDNS_NO_DAEMON");
+	}
+
 	smartdns_run_monitor_ret init_ret = _smartdns_run_monitor(restart_when_crash, is_run_as_daemon);
 	if (init_ret != SMARTDNS_RUN_MONITOR_OK) {
 		if (init_ret == SMARTDNS_RUN_MONITOR_EXIT) {
@@ -1101,6 +1134,10 @@ int main(int argc, char *argv[])
 	if (ret != 0) {
 		fprintf(stderr, "load config failed.\n");
 		goto errout;
+	}
+
+	if (dns_restart_on_crash && restart_when_crash == 0) {
+		return smartdns_enter_monitor_mode(argc, argv, dns_no_daemon || !is_run_as_daemon);
 	}
 
 	if (dns_no_daemon || restart_when_crash) {
