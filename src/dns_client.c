@@ -1888,11 +1888,22 @@ static int _dns_client_recv(struct dns_server_info *server_info, unsigned char *
 			_dns_replied_check_remove(query, from, from_len);
 			atomic_inc(&query->dns_request_sent);
 			if (ret == DNS_CLIENT_ACTION_RETRY) {
-				/* retry immdiately */
+				/*
+				 * retry immdiately
+				 * The socket needs to be re-created to avoid being limited, such as 1.1.1.1
+				 */
+				pthread_mutex_lock(&client.server_list_lock);
+				_dns_client_close_socket(server_info);
+				pthread_mutex_unlock(&client.server_list_lock);
 				_dns_client_retry_dns_query(query);
 			}
 		} else {
-			query->has_result = 1;
+			if (ret == DNS_CLIENT_ACTION_OK) {
+				query->has_result = 1;
+			} else {
+				tlog(TLOG_DEBUG, "query %s result is invalid, %d", query->domain, ret);
+			}
+
 			if (request_num == 0) {
 				/* if all server replied, or done, stop query, release resource */
 				_dns_client_query_remove(query);
@@ -2064,9 +2075,6 @@ errout:
 
 	return -1;
 }
-
-#include <net/if.h>
-#include <sys/ioctl.h>
 
 static int _dns_client_create_socket_udp_mdns(struct dns_server_info *server_info)
 {
@@ -2595,9 +2603,11 @@ static int _dns_client_process_udp(struct dns_server_info *server_info, struct e
 		}
 	}
 
+	int from_port = from.ss_family == AF_INET ? ntohs(((struct sockaddr_in *)&from)->sin_port)
+											  : ntohs(((struct sockaddr_in6 *)&from)->sin6_port);
 	int latency = get_tick_count() - server_info->send_tick;
-	tlog(TLOG_DEBUG, "recv udp packet from %s, len: %d, ttl: %d, latency: %d",
-		 get_host_by_addr(from_host, sizeof(from_host), (struct sockaddr *)&from), len, ttl, latency);
+	tlog(TLOG_DEBUG, "recv udp packet from %s:%d, len: %d, ttl: %d, latency: %d",
+		 get_host_by_addr(from_host, sizeof(from_host), (struct sockaddr *)&from), from_port, len, ttl, latency);
 
 	/* update recv time */
 	time(&server_info->last_recv);

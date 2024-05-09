@@ -3760,7 +3760,8 @@ static int _dns_server_process_answer_A_IP(struct dns_request *request, char *cn
 
 		/* add this ip to request */
 		if (_dns_ip_address_check_add(request, cname, paddr, DNS_T_A, 0, NULL) != 0) {
-			return -1;
+			/* skip result */
+			return -2;
 		}
 
 		snprintf(ip, sizeof(ip), "%d.%d.%d.%d", paddr[0], paddr[1], paddr[2], paddr[3]);
@@ -3829,7 +3830,8 @@ static int _dns_server_process_answer_AAAA_IP(struct dns_request *request, char 
 
 		/* add this ip to request */
 		if (_dns_ip_address_check_add(request, cname, paddr, DNS_T_AAAA, 0, NULL) != 0) {
-			return -1;
+			/* skip result */
+			return -2;
 		}
 
 		snprintf(ip, sizeof(ip), "[%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x]", paddr[0],
@@ -4038,6 +4040,7 @@ static int _dns_server_process_answer(struct dns_request *request, const char *d
 	int ret = 0;
 	int is_skip = 0;
 	int has_result = 0;
+	int is_rcode_set = 0;
 
 	if (packet->head.rcode != DNS_RC_NOERROR && packet->head.rcode != DNS_RC_NXDOMAIN) {
 		if (request->rcode == DNS_RC_SERVFAIL) {
@@ -4092,6 +4095,7 @@ static int _dns_server_process_answer(struct dns_request *request, const char *d
 					return -1;
 				}
 				request->rcode = packet->head.rcode;
+				is_rcode_set = 1;
 			} break;
 			case DNS_T_AAAA: {
 				ret = _dns_server_process_answer_AAAA(rrs, request, domain, cname, result_flag);
@@ -4104,6 +4108,7 @@ static int _dns_server_process_answer(struct dns_request *request, const char *d
 					return -1;
 				}
 				request->rcode = packet->head.rcode;
+				is_rcode_set = 1;
 			} break;
 			case DNS_T_NS: {
 				char nsname[DNS_MAX_CNAME_LEN];
@@ -4127,9 +4132,11 @@ static int _dns_server_process_answer(struct dns_request *request, const char *d
 				if (ret == -1) {
 					break;
 				} else if (ret == -2) {
+					is_skip = 1;
 					continue;
 				}
 				request->rcode = packet->head.rcode;
+				is_rcode_set = 1;
 				if (request->has_ip == 0) {
 					request->passthrough = 1;
 					_dns_server_request_complete(request);
@@ -4147,6 +4154,7 @@ static int _dns_server_process_answer(struct dns_request *request, const char *d
 				request->has_soa = 1;
 				if (request->rcode != DNS_RC_NOERROR) {
 					request->rcode = packet->head.rcode;
+					is_rcode_set = 1;
 				}
 				dns_get_SOA(rrs, name, 128, &ttl, &request->soa);
 				tlog(TLOG_DEBUG,
@@ -4176,10 +4184,16 @@ static int _dns_server_process_answer(struct dns_request *request, const char *d
 		request->rcode = packet->head.rcode;
 	}
 
-	if (has_result == 0 && request->rcode == DNS_RC_NOERROR && packet->head.tc == 1) {
+	if (has_result == 0 && request->rcode == DNS_RC_NOERROR && packet->head.tc == 1 && request->has_ip == 0 &&
+		request->has_soa == 0) {
 		tlog(TLOG_DEBUG, "result is truncated, %s qtype: %d, rcode: %d, id: %d, retry.", domain, request->qtype,
 			 packet->head.rcode, packet->head.id);
 		return DNS_CLIENT_ACTION_RETRY;
+	}
+
+	if (is_rcode_set == 0 && has_result == 1 && is_skip == 0) {
+		/* need retry for some server. */
+		return DNS_CLIENT_ACTION_MAY_RETRY;
 	}
 
 	return DNS_CLIENT_ACTION_OK;
@@ -6696,7 +6710,7 @@ static void _dns_server_mdns_query_setup_server_group(struct dns_request *reques
 	}
 
 	*group_name = DNS_SERVER_GROUP_MDNS;
-	safe_strncpy(request->dns_group_name, DNS_SERVER_GROUP_MDNS, sizeof(request->dns_group_name));
+	safe_strncpy(request->dns_group_name, *group_name, sizeof(request->dns_group_name));
 	return;
 }
 
@@ -6935,16 +6949,17 @@ static int _dns_server_do_query(struct dns_request *request, int skip_notify_eve
 	/* check and set passthrough */
 	_dns_server_check_set_passthrough(request);
 
-	/* process cache */
-	if (request->prefetch == 0 && request->dualstack_selection_query == 0) {
-		if (_dns_server_process_cache(request) == 0) {
-			goto clean_exit;
-		}
-	}
-
 	/* process ptr */
 	if (_dns_server_process_ptr_query(request) == 0) {
 		goto clean_exit;
+	}
+
+	/* process cache */
+	if (request->prefetch == 0 && request->dualstack_selection_query == 0) {
+		_dns_server_mdns_query_setup_server_group(request, &server_group_name);
+		if (_dns_server_process_cache(request) == 0) {
+			goto clean_exit;
+		}
 	}
 
 	ret = _dns_server_set_to_pending_list(request);
