@@ -3,7 +3,7 @@ LABEL previous-stage=smartdns-builder
 
 # prepare builder
 ARG OPENSSL_VER=3.0.10
-RUN apt update && \
+RUN apt update && apt full-upgrade -y && \
     apt install -y binutils perl curl make musl-tools musl-dev && \
     ln -s /usr/include/linux /usr/include/$(uname -m)-linux-musl && \
     ln -s /usr/include/asm-generic /usr/include/$(uname -m)-linux-musl && \
@@ -11,7 +11,7 @@ RUN apt update && \
     \
     mkdir -p /build/openssl && \
     cd /build/openssl && \
-    curl -sSL https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz | tar --strip-components=1 -zxv && \
+    curl -sSL http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_${OPENSSL_VER}.orig.tar.gz | tar --strip-components=1 -zxv && \
     \
     export CC=musl-gcc && \
     if [ "$(uname -m)" = "aarch64" ]; then \
@@ -35,7 +35,6 @@ RUN cd /build/smartdns && \
     mkdir -p /release/var/log /release/run && \
     cp package/smartdns/etc /release/ -a && \
     cp package/smartdns/usr /release/ -a && \
-    cp /etc/ssl/ /release/etc/ssl -a && \
     cd / && rm -rf /build
 
 FROM busybox:stable-musl
