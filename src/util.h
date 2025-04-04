@@ -55,6 +55,8 @@ void bug_ext(const char *file, int line, const char *func, const char *errfmt, .
 
 unsigned long get_tick_count(void);
 
+unsigned long long get_utc_time_ms(void);
+
 char *dir_name(char *path);
 
 int get_uid_gid(uid_t *uid, gid_t *gid);
@@ -63,7 +65,7 @@ int drop_root_privilege(void);
 
 int create_dir_with_perm(const char *dir_path);
 
-char *get_host_by_addr(char *host, int maxsize, struct sockaddr *addr);
+char *get_host_by_addr(char *host, int maxsize, const struct sockaddr *addr);
 
 int generate_random_addr(unsigned char *addr, int addr_len, int mask);
 
@@ -72,9 +74,12 @@ int generate_addr_map(const unsigned char *addr_from, const unsigned char *addr_
 
 int is_private_addr(const unsigned char *addr, int addr_len);
 
-int is_private_addr_sockaddr(struct sockaddr *addr, socklen_t addr_len);
+int is_private_addr_sockaddr(const struct sockaddr *addr, socklen_t addr_len);
 
 int getaddr_by_host(const char *host, struct sockaddr *addr, socklen_t *addr_len);
+
+int get_raw_addr_by_sockaddr(const struct sockaddr_storage *addr, int addr_len, unsigned char *raw_addr,
+							 int *raw_addr_len);
 
 int get_raw_addr_by_ip(const char *ip, unsigned char *raw_addr, int *raw_addr_len);
 
@@ -184,9 +189,15 @@ void daemon_close_stdfds(void);
 
 int write_file(const char *filename, void *data, int data_len);
 
+int set_http_host(const char *uri_host, int port, int default_port, char *host);
+
 int dns_packet_save(const char *dir, const char *type, const char *from, const void *packet, int packet_len);
 
 int dns_packet_debug(const char *packet_file);
+
+int dns_is_quic_supported(void);
+
+int decode_hex(int ch);
 
 #ifdef __cplusplus
 }

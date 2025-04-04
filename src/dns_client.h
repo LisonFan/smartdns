@@ -43,6 +43,8 @@ typedef enum {
 	DNS_SERVER_TCP,
 	DNS_SERVER_TLS,
 	DNS_SERVER_HTTPS,
+	DNS_SERVER_QUIC,
+	DNS_SERVER_HTTP3,
 	DNS_SERVER_MDNS,
 	DNS_SERVER_TYPE_END,
 } dns_server_type_t;
@@ -81,9 +83,21 @@ unsigned int dns_client_server_result_flag(struct dns_server_info *server_info);
 
 const char *dns_client_get_server_ip(struct dns_server_info *server_info);
 
+const char *dns_client_get_server_host(struct dns_server_info *server_info);
+
 int dns_client_get_server_port(struct dns_server_info *server_info);
 
 dns_server_type_t dns_client_get_server_type(struct dns_server_info *server_info);
+
+struct dns_server_stats *dns_client_get_server_stats(struct dns_server_info *server_info);
+
+int dns_client_server_is_alive(struct dns_server_info *server_info);
+
+int dns_client_get_server_info_lists(struct dns_server_info **server_info, int max_server_num);
+
+void dns_client_server_info_get(struct dns_server_info *server_info);
+
+void dns_client_server_info_release(struct dns_server_info *server_info);
 
 struct dns_query_ecs_ip {
 	char ip[DNS_MAX_CNAME_LEN];
@@ -116,6 +130,7 @@ struct client_dns_server_flag_tls {
 	int spi_len;
 	char hostname[DNS_MAX_CNAME_LEN];
 	char tls_host_verify[DNS_MAX_CNAME_LEN];
+	char alpn[DNS_MAX_ALPN_LEN];
 	char skip_check_cert;
 };
 
@@ -127,6 +142,7 @@ struct client_dns_server_flag_https {
 	char proxyname[DNS_MAX_CNAME_LEN];
 	char path[DNS_MAX_CNAME_LEN];
 	char tls_host_verify[DNS_MAX_CNAME_LEN];
+	char alpn[DNS_MAX_ALPN_LEN];
 	char skip_check_cert;
 };
 
@@ -143,6 +159,7 @@ struct client_dns_server_flags {
 	long long set_mark;
 	int tcp_keepalive;
 	int drop_packet_latency_ms;
+	int fallback;
 
 	char proxyname[DNS_MAX_CNAME_LEN];
 	char ifname[DNS_SERVER_IFNAME_LEN];
@@ -159,21 +176,23 @@ struct client_dns_server_flags {
 	};
 };
 
+void dns_client_flags_init(struct client_dns_server_flags *flags);
+
 int dns_client_spki_decode(const char *spki, unsigned char *spki_data_out, int spki_data_out_max_len);
 
 /* add remote dns server */
-int dns_client_add_server(char *server_ip, int port, dns_server_type_t server_type,
+int dns_client_add_server(const char *server_ip, int port, dns_server_type_t server_type,
 						  struct client_dns_server_flags *flags);
 
 /* remove remote dns server */
-int dns_client_remove_server(char *server_ip, int port, dns_server_type_t server_type);
+int dns_client_remove_server(const char *server_ip, int port, dns_server_type_t server_type);
 
 int dns_client_add_group(const char *group_name);
 
-int dns_client_add_to_group(const char *group_name, char *server_ip, int port, dns_server_type_t server_type,
+int dns_client_add_to_group(const char *group_name, const char *server_ip, int port, dns_server_type_t server_type,
 							struct client_dns_server_flags *flags);
 
-int dns_client_remove_from_group(const char *group_name, char *server_ip, int port, dns_server_type_t server_type,
+int dns_client_remove_from_group(const char *group_name, const char *server_ip, int port, dns_server_type_t server_type,
 								 struct client_dns_server_flags *flags);
 
 int dns_client_remove_group(const char *group_name);

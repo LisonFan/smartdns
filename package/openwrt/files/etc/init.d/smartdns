@@ -735,7 +735,7 @@ load_service()
 	[ -z "$response_mode" ] || conf_append "response-mode" "$response_mode"
 
 	config_get_bool enable_auto_update "$section" "enable_auto_update" "0"
-	[ "$enable_auto_update" = "1" ] && enable_auto_update || disable_auto_update
+	[ "$enabled" = "1" -a "$enable_auto_update" = "1" ] && enable_auto_update || disable_auto_update
 
 	config_get_bool bind_device "$section" "bind_device" "0"
 	config_get bind_device_name "$section" "bind_device_name" "${lan_device}"
@@ -855,6 +855,14 @@ load_service()
 	config_foreach load_IP_rule_list "ip-rule"
 
 	config_foreach load_IP_rule_list "ip-rule-list"
+
+	config_get_bool ui "$section" "ui" '0'
+
+	[ "$ui" = "1" ] && {
+		conf_append "plugin" "/usr/lib/libsmartdns_ui.so"
+		conf_append "smartdns-ui.www-root" "/usr/share/smartdns/wwwroot"
+		conf_append "data-dir" "/var/lib/smartdns"
+	}
 
 	{
 		echo "conf-file $ADDRESS_CONF"

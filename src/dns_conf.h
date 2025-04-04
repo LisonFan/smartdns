@@ -56,6 +56,7 @@ extern "C" {
 #define DEFAULT_DNS_PORT 53
 #define DEFAULT_DNS_TLS_PORT 853
 #define DEFAULT_DNS_HTTPS_PORT 443
+#define DEFAULT_DNS_QUIC_PORT 853
 #define DNS_MAX_CONF_CNAME_LEN 256
 #define MAX_QTYPE_NUM 65535
 #define DNS_MAX_REPLY_IP_NUM 8
@@ -68,6 +69,7 @@ extern "C" {
 #define SMARTDNS_LOG_FILE "/var/log/smartdns/smartdns.log"
 #define SMARTDNS_AUDIT_FILE "/var/log/smartdns/smartdns-audit.log"
 #define SMARTDNS_CACHE_FILE "/var/cache/smartdns/smartdns.cache"
+#define SMARTDNS_DATA_DIR "/var/lib/smartdns"
 #define SMARTDNS_TMP_CACHE_FILE "/tmp/smartdns.cache"
 #define SMARTDNS_DEBUG_DIR "/tmp/smartdns"
 #define DNS_RESOLV_FILE "/etc/resolv.conf"
@@ -387,6 +389,7 @@ struct dns_servers {
 	long long set_mark;
 	unsigned int drop_packet_latency_ms;
 	int tcp_keepalive;
+	int fallback;
 	int subnet_all_query_types;
 	char skip_check_cert;
 	char spki[DNS_MAX_SPKI_LEN];
@@ -396,6 +399,7 @@ struct dns_servers {
 	char path[DNS_MAX_URL_LEN];
 	char proxyname[PROXY_NAME_LEN];
 	char ifname[MAX_INTERFACE_LEN];
+	char alpn[DNS_MAX_ALPN_LEN];
 	struct dns_edns_client_subnet ipv4_ecs;
 	struct dns_edns_client_subnet ipv6_ecs;
 };
@@ -649,9 +653,6 @@ struct dns_srv_record_table {
 };
 extern struct dns_srv_record_table dns_conf_srv_record_table;
 
-extern struct dns_bind_ip dns_conf_bind_ip[DNS_MAX_BIND_IP];
-extern int dns_conf_bind_ip_num;
-
 struct dns_conf_plugin {
 	struct hlist_node node;
 	char name[DNS_MAX_CNAME_LEN];
@@ -660,84 +661,102 @@ struct dns_conf_plugin {
 	int argc;
 	int args_len;
 };
+
+struct dns_conf_plugin_conf {
+	struct hlist_node node;
+	char key[MAX_KEY_LEN];
+	char value[MAX_LINE_LEN];
+};
+
 struct dns_conf_plugin_table {
 	DECLARE_HASHTABLE(plugins, 4);
+	DECLARE_HASHTABLE(plugins_conf, 4);
 };
 extern struct dns_conf_plugin_table dns_conf_plugin_table;
-
-extern char dns_conf_bind_ca_file[DNS_MAX_PATH];
-extern char dns_conf_bind_ca_key_file[DNS_MAX_PATH];
-extern char dns_conf_bind_ca_key_pass[DNS_MAX_PATH];
-extern char dns_conf_need_cert;
-
-extern int dns_conf_tcp_idle_time;
-extern ssize_t dns_conf_cachesize;
-extern ssize_t dns_conf_cache_max_memsize;
-extern struct dns_servers dns_conf_servers[DNS_MAX_SERVERS];
-extern int dns_conf_server_num;
-
 extern char dns_conf_exist_bootstrap_dns;
+extern int dns_ping_cap_force_enable;
 
-/* proxy servers */
-extern struct dns_proxy_servers dns_conf_proxy_servers[PROXY_MAX_SERVERS];
-extern int dns_conf_proxy_server_num;
+struct dns_config {
+	struct dns_bind_ip bind_ip[DNS_MAX_BIND_IP];
+	int bind_ip_num;
 
-extern int dns_conf_log_level;
-extern char dns_conf_log_file[DNS_MAX_PATH];
-extern size_t dns_conf_log_size;
-extern int dns_conf_log_num;
-extern int dns_conf_log_file_mode;
-extern int dns_conf_log_console;
-extern int dns_conf_log_syslog;
+	char bind_ca_file[DNS_MAX_PATH];
+	char bind_ca_key_file[DNS_MAX_PATH];
+	char bind_ca_key_pass[DNS_MAX_PATH];
+	char need_cert;
+	int tcp_idle_time;
+	ssize_t cachesize;
+	ssize_t cache_max_memsize;
+	struct dns_servers servers[DNS_MAX_SERVERS];
+	int server_num;
 
-extern char dns_conf_ca_file[DNS_MAX_PATH];
-extern char dns_conf_ca_path[DNS_MAX_PATH];
+	/* proxy servers */
+	struct dns_proxy_servers proxy_servers[PROXY_MAX_SERVERS];
+	int proxy_server_num;
 
-extern char dns_conf_cache_file[DNS_MAX_PATH];
-extern int dns_conf_cache_persist;
-extern int dns_conf_cache_checkpoint_time;
+	int log_level;
+	char log_file[DNS_MAX_PATH];
+	size_t log_size;
+	int log_num;
+	int log_file_mode;
+	int log_console;
+	int log_syslog;
 
-extern struct dns_domain_check_orders dns_conf_default_check_orders;
-extern int dns_conf_has_icmp_check;
-extern int dns_conf_has_tcp_check;
+	char ca_file[DNS_MAX_PATH];
+	char ca_path[DNS_MAX_PATH];
 
-extern struct dns_server_groups dns_conf_server_groups[DNS_NAX_GROUP_NUMBER];
-extern int dns_conf_server_group_num;
+	char cache_file[DNS_MAX_PATH];
+	char var_libdir[DNS_MAX_PATH];
+	int cache_persist;
+	int cache_checkpoint_time;
 
-extern int dns_conf_audit_enable;
-extern int dns_conf_audit_log_SOA;
-extern int dns_conf_audit_syslog;
-extern char dns_conf_audit_file[DNS_MAX_PATH];
-extern size_t dns_conf_audit_size;
-extern int dns_conf_audit_num;
-extern int dns_conf_audit_file_mode;
-extern int dns_conf_audit_console;
-extern int dns_conf_audit_syslog;
+	char data_dir[DNS_MAX_PATH];
 
-extern char dns_conf_server_name[DNS_MAX_SERVER_NAME_LEN];
-extern struct dns_conf_domain_rule dns_conf_domain_rule;
-extern struct dns_conf_client_rule dns_conf_client_rule;
+	struct dns_domain_check_orders default_check_orders;
+	int has_icmp_check;
+	int has_tcp_check;
 
-extern int dns_conf_max_query_limit;
-extern enum response_mode_type dns_conf_default_response_mode;
-extern int dns_conf_nftset_debug_enable;
-extern int dns_conf_local_ttl;
-extern int dns_conf_mdns_lookup;
-extern int dns_conf_local_ptr_enable;
-extern int dns_conf_acl_enable;
+	struct dns_server_groups server_groups[DNS_NAX_GROUP_NUMBER];
+	int server_group_num;
 
-extern char dns_conf_user[DNS_CONF_USERNAME_LEN];
+	int audit_enable;
+	int audit_log_SOA;
+	char audit_file[DNS_MAX_PATH];
+	size_t audit_size;
+	int audit_num;
+	int audit_file_mode;
+	int audit_console;
+	int audit_syslog;
 
-extern char dns_conf_sni_proxy_ip[DNS_MAX_IPLEN];
+	char server_name[DNS_MAX_SERVER_NAME_LEN];
+	struct dns_conf_domain_rule domain_rule;
+	struct dns_conf_client_rule client_rule;
 
-extern int dns_save_fail_packet;
-extern char dns_save_fail_packet_dir[DNS_MAX_PATH];
-extern char dns_resolv_file[DNS_MAX_PATH];
+	int max_query_limit;
+	enum response_mode_type default_response_mode;
+	int nftset_debug_enable;
+	int local_ttl;
+	int mdns_lookup;
+	int local_ptr_enable;
+	int acl_enable;
 
-extern int dns_no_pidfile;
-extern int dns_no_daemon;
-extern int dns_restart_on_crash;
-extern size_t dns_socket_buff_size;
+	char user[DNS_CONF_USERNAME_LEN];
+
+	char sni_proxy_ip[DNS_MAX_IPLEN];
+	int resolv_hostname;
+
+	int expand_ptr_from_address;
+
+	int dns_save_fail_packet;
+	char dns_save_fail_packet_dir[DNS_MAX_PATH];
+	char dns_resolv_file[DNS_MAX_PATH];
+
+	int dns_no_pidfile;
+	int dns_no_daemon;
+	int dns_restart_on_crash;
+	size_t dns_socket_buff_size;
+};
+extern struct dns_config dns_conf;
 
 void dns_server_load_exit(void);
 
@@ -745,7 +764,7 @@ int dns_server_load_conf(const char *file);
 
 int dns_server_check_update_hosts(void);
 
-struct dns_proxy_names *dns_server_get_proxy_nams(const char *proxyname);
+struct dns_proxy_names *dns_server_get_proxy_names(const char *proxyname);
 
 struct dns_srv_records *dns_server_get_srv_record(const char *domain);
 
@@ -755,9 +774,15 @@ struct dns_conf_group *dns_server_get_default_rule_group(void);
 
 struct client_roue_group_mac *dns_server_rule_group_mac_get(const uint8_t mac[6]);
 
+const char *dns_conf_get_plugin_conf(const char *key);
+
+void dns_conf_clear_all_plugin_conf(void);
+
 extern int config_additional_file(void *data, int argc, char *argv[]);
 
 const char *dns_conf_get_cache_dir(void);
+
+const char *dns_conf_get_data_dir(void);
 
 #ifdef __cplusplus
 }
