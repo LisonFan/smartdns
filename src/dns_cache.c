@@ -1,6 +1,6 @@
 /*************************************************************************
  *
- * Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
+ * Copyright (C) 2018-2025 Ruilin Peng (Nick) <pymumu@gmail.com>.
  *
  * smartdns is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,12 +16,14 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "dns_cache.h"
-#include "dns_stats.h"
-#include "stringutil.h"
-#include "timer.h"
-#include "tlog.h"
-#include "util.h"
+#define _GNU_SOURCE
+
+#include "smartdns/dns_cache.h"
+#include "smartdns/dns_stats.h"
+#include "smartdns/lib/stringutil.h"
+#include "smartdns/timer.h"
+#include "smartdns/tlog.h"
+#include "smartdns/util.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -119,11 +121,16 @@ void dns_cache_get(struct dns_cache *dns_cache)
 
 void dns_cache_release(struct dns_cache *dns_cache)
 {
+	int refcnt = 0;
 	if (dns_cache == NULL) {
 		return;
 	}
 
-	if (!atomic_dec_and_test(&dns_cache->ref)) {
+	refcnt = atomic_dec_return(&dns_cache->ref);
+	if (refcnt > 0) {
+		return;
+	} else if (refcnt < 0) {
+		BUG("dns_cache refcnt is invalid: %d", refcnt);
 		return;
 	}
 
@@ -132,6 +139,7 @@ void dns_cache_release(struct dns_cache *dns_cache)
 
 static void _dns_cache_remove(struct dns_cache *dns_cache)
 {
+	dns_cache->del_pending = 0;
 	hash_del(&dns_cache->node);
 	list_del_init(&dns_cache->list);
 	dns_timer_del(&dns_cache->timer);
@@ -176,7 +184,7 @@ struct dns_cache_data *dns_cache_new_data_packet(void *packet, size_t packet_len
 static void dns_cache_timer_release(struct tw_base *base, struct tw_timer_list *timer, void *data)
 {
 	struct dns_cache *dns_cache = data;
-	dns_cache_delete(dns_cache);
+	dns_cache_release(dns_cache);
 }
 
 static void dns_cache_expired(struct tw_base *base, struct tw_timer_list *timer, void *data, unsigned long timestamp)
@@ -672,6 +680,7 @@ static int _dns_cache_read_record(int fd, uint32_t cache_number, dns_cache_read_
 {
 	unsigned int i = 0;
 	ssize_t ret = 0;
+	int data_size = 0;
 	struct dns_cache_record cache_record;
 	struct dns_cache_data_head data_head;
 	struct dns_cache_data *cache_data = NULL;
@@ -704,7 +713,8 @@ static int _dns_cache_read_record(int fd, uint32_t cache_number, dns_cache_read_
 			goto errout;
 		}
 
-		cache_data = malloc(data_head.size + sizeof(data_head));
+		data_size = data_head.size + sizeof(data_head);
+		cache_data = malloc(data_size);
 		if (cache_data == NULL) {
 			tlog(TLOG_ERROR, "malloc cache data failed %s", strerror(errno));
 			goto errout;
@@ -722,6 +732,7 @@ static int _dns_cache_read_record(int fd, uint32_t cache_number, dns_cache_read_
 		cache_record.info.is_visited = 0;
 		cache_record.info.domain[DNS_MAX_CNAME_LEN - 1] = '\0';
 		cache_record.info.dns_group_name[DNS_GROUP_NAME_LEN - 1] = '\0';
+		atomic_add(data_size, &dns_cache_head.mem_size);
 		ret = callback(&cache_record, cache_data);
 		dns_cache_data_put(cache_data);
 		cache_data = NULL;

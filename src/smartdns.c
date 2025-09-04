@@ -1,6 +1,6 @@
 /*************************************************************************
  *
- * Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
+ * Copyright (C) 2018-2025 Ruilin Peng (Nick) <pymumu@gmail.com>.
  *
  * smartdns is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,15 +18,15 @@
 
 #define _GNU_SOURCE
 
-#include "smartdns.h"
+#include "smartdns/smartdns.h"
 
-#include "art.h"
-#include "atomic.h"
-#include "hashtable.h"
-#include "list.h"
-#include "rbtree.h"
-#include "timer.h"
-#include "tlog.h"
+#include "smartdns/lib/art.h"
+#include "smartdns/lib/atomic.h"
+#include "smartdns/lib/hashtable.h"
+#include "smartdns/lib/list.h"
+#include "smartdns/lib/rbtree.h"
+#include "smartdns/timer.h"
+#include "smartdns/tlog.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -110,7 +110,7 @@ static void _smartdns_get_version(char *str_ver, int str_ver_len)
 #endif
 }
 
-const char *smartdns_version()
+const char *smartdns_version(void)
 {
 	static char str_ver[256] = {0};
 	if (str_ver[0] == 0) {
@@ -379,6 +379,10 @@ static int _smartdns_create_cert(void)
 {
 	uid_t uid = 0;
 	gid_t gid = 0;
+	char san[PATH_MAX] = {0};
+	/* 13 month */
+	int validity_days = 13 * 30;
+	char ddns_san[DNS_MAX_CNAME_LEN] = {0};
 
 	if (dns_conf.need_cert == 0) {
 		return 0;
@@ -390,11 +394,38 @@ static int _smartdns_create_cert(void)
 
 	conf_get_conf_fullpath("smartdns-cert.pem", dns_conf.bind_ca_file, sizeof(dns_conf.bind_ca_file));
 	conf_get_conf_fullpath("smartdns-key.pem", dns_conf.bind_ca_key_file, sizeof(dns_conf.bind_ca_key_file));
+	conf_get_conf_fullpath("smartdns-root-key.pem", dns_conf.bind_root_ca_key_file,
+						   sizeof(dns_conf.bind_root_ca_key_file));
 	if (access(dns_conf.bind_ca_file, F_OK) == 0 && access(dns_conf.bind_ca_key_file, F_OK) == 0) {
-		return 0;
+		if (is_cert_valid(dns_conf.bind_ca_file)) {
+			return 0;
+		}
+
+		if (access(dns_conf.bind_root_ca_key_file, R_OK) != 0) {
+			tlog(TLOG_WARN, "root ca key file %s is not found, can not regenerate cert file.",
+				 dns_conf.bind_root_ca_key_file);
+			return 0;
+		}
+		unlink(dns_conf.bind_ca_file);
+		unlink(dns_conf.bind_ca_key_file);
+		tlog(TLOG_WARN, "regenerate cert with root ca key %s", dns_conf.bind_root_ca_key_file);
+	}
+	
+	if (dns_conf_get_ddns_domain()[0] != 0) {
+		snprintf(ddns_san, sizeof(ddns_san), "DNS:%s", dns_conf_get_ddns_domain());
 	}
 
-	if (generate_cert_key(dns_conf.bind_ca_key_file, dns_conf.bind_ca_file, NULL, 365 * 3) != 0) {
+	if (generate_cert_san(san, sizeof(san), ddns_san) != 0) {
+		tlog(TLOG_WARN, "generate cert san failed.");
+		return -1;
+	}
+
+	if (dns_conf.bind_ca_validity_days > 0) {
+		validity_days = dns_conf.bind_ca_validity_days;
+	}
+
+	if (generate_cert_key(dns_conf.bind_ca_key_file, dns_conf.bind_ca_file, dns_conf.bind_root_ca_key_file, san,
+						  validity_days) != 0) {
 		tlog(TLOG_WARN, "Generate default ssl cert and key file failed. %s", strerror(errno));
 		return -1;
 	}
@@ -792,7 +823,12 @@ static int _smartdns_create_datadir(void)
 	}
 
 	mkdir(data_dir, 0750);
-	if (stat(data_dir, &sb) == 0 && sb.st_uid == uid && sb.st_gid == gid && (sb.st_mode & 0700) == 0700) {
+	if (stat(data_dir, &sb) != 0) {
+		tlog(TLOG_DEBUG, "create dir %s failed, %s", data_dir, strerror(errno));
+		return -1;
+	}
+
+	if (sb.st_uid == uid && sb.st_gid == gid && (sb.st_mode & 0700) == 0700) {
 		return 0;
 	}
 
@@ -822,9 +858,13 @@ static int _set_rlimit(void)
 
 static int _smartdns_init_pre(void)
 {
+	int ret = -1;
 	_smartdns_create_logdir();
 	_smartdns_create_cache_dir();
-	_smartdns_create_datadir();
+	ret = _smartdns_create_datadir();
+	if (ret != 0) {
+		tlog(TLOG_DEBUG, "create data dir failed.");
+	}
 
 	_set_rlimit();
 
@@ -982,9 +1022,10 @@ int smartdns_reg_post_func(smartdns_post_func func, void *arg)
 #define smartdns_test_notify(retval) smartdns_test_notify_func(fd_notify, retval)
 static void smartdns_test_notify_func(int fd_notify, uint64_t retval)
 {
+	int unused __attribute__((unused));
 	/* notify parent kickoff */
 	if (fd_notify > 0) {
-		write(fd_notify, &retval, sizeof(retval));
+		unused = write(fd_notify, &retval, sizeof(retval));
 	}
 
 	if (_smartdns_post != NULL) {
@@ -1170,7 +1211,7 @@ int smartdns_main(int argc, char *argv[])
 
 	ret = _smartdns_init_pre();
 	if (ret != 0) {
-		fprintf(stderr, "init failed.\n");
+		fprintf(stderr, "smartdns init failed.\n");
 		goto errout;
 	}
 

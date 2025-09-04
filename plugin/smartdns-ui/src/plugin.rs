@@ -1,6 +1,6 @@
 /*************************************************************************
  *
- * Copyright (C) 2018-2024 Ruilin Peng (Nick) <pymumu@gmail.com>.
+ * Copyright (C) 2018-2025 Ruilin Peng (Nick) <pymumu@gmail.com>.
  *
  * smartdns is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -95,7 +95,7 @@ impl SmartdnsPlugin {
 
         let www_root = Plugin::dns_conf_plugin_config("smartdns-ui.www-root");
         if let Some(www_root) = www_root {
-            http_conf.http_root = www_root;
+            http_conf.http_root = smartdns_conf_get_conf_fullpath(&www_root);
         }
 
         let ip = Plugin::dns_conf_plugin_config("smartdns-ui.ip");
@@ -112,7 +112,11 @@ impl SmartdnsPlugin {
         }
         dns_log!(LogLevel::INFO, "www root: {}", http_conf.http_root);
 
-        if let Some(token_expire) = matches.opt_str("token-expire") {
+        let mut token_expire = Plugin::dns_conf_plugin_config("smartdns-ui.token-expire");
+        if token_expire.is_none() {
+            token_expire = matches.opt_str("token-expire");
+        }
+        if let Some(token_expire) = token_expire {
             let v = token_expire.parse::<u32>();
             if let Err(e) = v {
                 dns_log!(
@@ -126,7 +130,7 @@ impl SmartdnsPlugin {
         }
 
         if let Some(data_dir) = matches.opt_str("data-dir") {
-            data_conf.data_root = data_dir;
+            data_conf.data_path = data_dir;
         }
 
         Ok(())
@@ -147,6 +151,7 @@ impl SmartdnsPlugin {
 
     pub fn start(&self, args: &Vec<String>) -> Result<(), Box<dyn Error>> {
         self.parser_args(args)?;
+        self.load_config()?;
         self.data_server_ctl
             .init_db(&self.data_conf.lock().unwrap())?;
         self.load_config()?;
@@ -174,6 +179,10 @@ impl SmartdnsPlugin {
 
     pub fn server_log(&self, level: LogLevel, msg: &str, msg_len: i32) {
         self.data_server_ctl.server_log(level, msg, msg_len);
+    }
+
+    pub fn server_audit_log(&self, msg: &str, msg_len: i32) {
+        self.data_server_ctl.server_audit_log(msg, msg_len);
     }
 }
 
@@ -208,6 +217,10 @@ impl SmartdnsOperations for SmartdnsPluginImpl {
 
     fn server_log(&self, level: LogLevel, msg: &str, msg_len: i32) {
         self.plugin.server_log(level, msg, msg_len);
+    }
+
+    fn server_audit_log(&self, msg: &str, msg_len: i32) {
+        self.plugin.server_audit_log(msg, msg_len);
     }
 
     fn server_init(&mut self, args: &Vec<String>) -> Result<(), Box<dyn Error>> {
