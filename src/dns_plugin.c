@@ -28,10 +28,10 @@
 #include "smartdns/util.h"
 #include <dlfcn.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 
 struct dns_plugin_ops {
 	struct list_head list;
@@ -57,7 +57,7 @@ struct dns_plugins {
 };
 
 static struct dns_plugins plugins;
-static int is_plugin_init;
+static atomic_t is_plugin_init = ATOMIC_INIT(0);
 
 int smartdns_plugin_func_server_recv(struct dns_packet *packet, unsigned char *inpacket, int inpacket_len,
 									 struct sockaddr_storage *local, socklen_t local_len, struct sockaddr_storage *from,
@@ -66,7 +66,7 @@ int smartdns_plugin_func_server_recv(struct dns_packet *packet, unsigned char *i
 	struct dns_plugin_ops *chain = NULL;
 	int ret = 0;
 
-	if (unlikely(is_plugin_init == 0)) {
+	if (unlikely(atomic_read(&is_plugin_init) == 0)) {
 		return 0;
 	}
 
@@ -92,7 +92,7 @@ void smartdns_plugin_func_server_complete_request(struct dns_request *request)
 {
 	struct dns_plugin_ops *chain = NULL;
 
-	if (unlikely(is_plugin_init == 0)) {
+	if (unlikely(atomic_read(&is_plugin_init) == 0)) {
 		return;
 	}
 
@@ -114,7 +114,7 @@ void smartdns_plugin_func_server_log_callback(smartdns_log_level level, const ch
 {
 	struct dns_plugin_ops *chain = NULL;
 
-	if (unlikely(is_plugin_init == 0)) {
+	if (unlikely(atomic_read(&is_plugin_init) == 0)) {
 		return;
 	}
 
@@ -136,7 +136,7 @@ void smartdns_plugin_func_server_audit_log_callback(const char *msg, int msg_len
 {
 	struct dns_plugin_ops *chain = NULL;
 
-	if (unlikely(is_plugin_init == 0)) {
+	if (unlikely(atomic_read(&is_plugin_init) == 0)) {
 		return;
 	}
 
@@ -213,8 +213,10 @@ static struct dns_plugin *_dns_plugin_get(const char *plugin_file)
 static int _dns_plugin_load_library(struct dns_plugin *plugin)
 {
 	void *handle = NULL;
+	dns_plugin_api_version_func version_func = NULL;
 	dns_plugin_init_func init_func = NULL;
 	dns_plugin_exit_func exit_func = NULL;
+	unsigned int api_version = 0;
 
 	tlog(TLOG_DEBUG, "load plugin %s", plugin->file);
 
@@ -222,6 +224,14 @@ static int _dns_plugin_load_library(struct dns_plugin *plugin)
 	if (!handle) {
 		tlog(TLOG_ERROR, "load plugin %s failed: %s", plugin->file, dlerror());
 		return -1;
+	}
+
+	version_func = (dns_plugin_api_version_func)dlsym(handle, DNS_PLUGIN_API_VERSION_FUNC);
+	if (!version_func) {
+		tlog(TLOG_ERROR,
+			 "plugin %s has no api version function, maybe an old version plugin, please download latest version.",
+			 plugin->file);
+		goto errout;
 	}
 
 	init_func = (dns_plugin_init_func)dlsym(handle, DNS_PLUGIN_INIT_FUNC);
@@ -235,6 +245,28 @@ static int _dns_plugin_load_library(struct dns_plugin *plugin)
 	if (!exit_func) {
 		tlog(TLOG_ERROR, "load plugin failed: %s", dlerror());
 		tlog(TLOG_ERROR, "%s not a valid smartdns plugin, please check 'plugin' option.", plugin->file);
+		goto errout;
+	}
+
+	api_version = version_func();
+	if (SMARTDNS_PLUGIN_API_VERSION_MAJOR(api_version) !=
+		SMARTDNS_PLUGIN_API_VERSION_MAJOR(SMARTDNS_PLUGIN_API_VERSION)) {
+		tlog(TLOG_ERROR,
+			 "plugin %s api version %u.%u not compatible with smartdns api version %u.%u, please download matching "
+			 "version.",
+			 plugin->file, SMARTDNS_PLUGIN_API_VERSION_MAJOR(api_version),
+			 SMARTDNS_PLUGIN_API_VERSION_MINOR(api_version),
+			 SMARTDNS_PLUGIN_API_VERSION_MAJOR(SMARTDNS_PLUGIN_API_VERSION),
+			 SMARTDNS_PLUGIN_API_VERSION_MINOR(SMARTDNS_PLUGIN_API_VERSION));
+		goto errout;
+	} else if (SMARTDNS_PLUGIN_API_VERSION_MINOR(api_version) >
+			   SMARTDNS_PLUGIN_API_VERSION_MINOR(SMARTDNS_PLUGIN_API_VERSION)) {
+		tlog(TLOG_ERROR,
+			 "plugin %s api version %u.%u is newer than smartdns api version %u.%u, please download matching version.",
+			 plugin->file, SMARTDNS_PLUGIN_API_VERSION_MAJOR(api_version),
+			 SMARTDNS_PLUGIN_API_VERSION_MINOR(api_version),
+			 SMARTDNS_PLUGIN_API_VERSION_MAJOR(SMARTDNS_PLUGIN_API_VERSION),
+			 SMARTDNS_PLUGIN_API_VERSION_MINOR(SMARTDNS_PLUGIN_API_VERSION));
 		goto errout;
 	}
 
@@ -286,12 +318,10 @@ static struct dns_plugin *_dns_plugin_new(const char *plugin_file)
 		return NULL;
 	}
 
-	plugin = (struct dns_plugin *)malloc(sizeof(struct dns_plugin));
+	plugin = (struct dns_plugin *)zalloc(1, sizeof(struct dns_plugin));
 	if (!plugin) {
 		return NULL;
 	}
-
-	memset(plugin, 0, sizeof(struct dns_plugin));
 	strncpy(plugin->file, plugin_file, PATH_MAX - 1);
 
 	return plugin;
@@ -403,7 +433,7 @@ static int _dns_plugin_remove_all(void)
 
 int dns_server_plugin_init(void)
 {
-	if (is_plugin_init == 1) {
+	if (atomic_read(&is_plugin_init) == 1) {
 		return 0;
 	}
 
@@ -413,13 +443,13 @@ int dns_server_plugin_init(void)
 		tlog(TLOG_ERROR, "init plugin rwlock failed.");
 		return -1;
 	}
-	is_plugin_init = 1;
+	atomic_set(&is_plugin_init, 1);
 	return 0;
 }
 
 void dns_server_plugin_exit(void)
 {
-	if (is_plugin_init == 0) {
+	if (atomic_read(&is_plugin_init) == 0) {
 		return;
 	}
 
@@ -427,7 +457,7 @@ void dns_server_plugin_exit(void)
 	_dns_plugin_remove_all();
 
 	pthread_rwlock_destroy(&plugins.lock);
-	is_plugin_init = 0;
+	atomic_set(&is_plugin_init, 0);
 	return;
 }
 
@@ -449,6 +479,11 @@ void smartdns_plugin_log_setlevel(smartdns_log_level level)
 int smartdns_plugin_log_getlevel(void)
 {
 	return tlog_getlevel();
+}
+
+int smartdns_plugin_is_audit_enabled(void)
+{
+	return dns_conf.audit_enable;
 }
 
 const char *smartdns_plugin_get_config(const char *key)

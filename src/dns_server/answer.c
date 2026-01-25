@@ -237,34 +237,32 @@ static int _dns_server_process_answer_HTTPS(struct dns_rrs *rrs, struct dns_requ
 	int ret = -1;
 	char name[DNS_MAX_CNAME_LEN] = {0};
 	char target[DNS_MAX_CNAME_LEN] = {0};
-	struct dns_https_param *p = NULL;
+	struct dns_svcparam *p = NULL;
 	int priority = 0;
 	struct dns_request_https *https_svcb;
 	int no_ipv4 = 0;
 	int no_ipv6 = 0;
+	int no_ech = 0;
 	struct dns_https_record_rule *https_record_rule = _dns_server_get_dns_rule(request, DOMAIN_RULE_HTTPS);
-	if (https_record_rule) {
-		if (https_record_rule->filter.no_ipv4hint) {
-			no_ipv4 = 1;
-		}
 
-		if (https_record_rule->filter.no_ipv6hint) {
-			no_ipv6 = 1;
-		}
+	if (https_record_rule) {
+		no_ipv4 = https_record_rule->filter.no_ipv4hint;
+		no_ipv6 = https_record_rule->filter.no_ipv6hint;
+		no_ech = https_record_rule->filter.no_ech;
 	}
 
-	ret = dns_get_HTTPS_svcparm_start(rrs, &p, name, DNS_MAX_CNAME_LEN, &ttl, &priority, target, DNS_MAX_CNAME_LEN);
+	ret = dns_svcparm_start(rrs, &p, name, DNS_MAX_CNAME_LEN, &ttl, &priority, target, DNS_MAX_CNAME_LEN);
 	if (ret != 0) {
 		tlog(TLOG_WARN, "get HTTPS svcparm failed");
 		return -1;
 	}
 
-	https_svcb = request->https_svcb;
+	https_svcb = zalloc(1, sizeof(*https_svcb));
 	if (https_svcb == NULL) {
-		/* ignore non-matched query type */
-		tlog(TLOG_WARN, "https svcb not set");
 		return -1;
 	}
+	INIT_LIST_HEAD(&https_svcb->list);
+	list_add_tail(&https_svcb->list, &request->https_svcb_list);
 
 	tlog(TLOG_DEBUG, "domain: %s HTTPS: %s TTL: %d priority: %d", name, target, ttl, priority);
 	https_svcb->ttl = ttl;
@@ -274,7 +272,7 @@ static int _dns_server_process_answer_HTTPS(struct dns_rrs *rrs, struct dns_requ
 	request->ip_ttl = ttl;
 
 	_dns_server_request_get(request);
-	for (; p; p = dns_get_HTTPS_svcparm_next(rrs, p)) {
+	for (; p; p = dns_svcparm_next(rrs, p)) {
 		switch (p->key) {
 		case DNS_HTTPS_T_MANDATORY: {
 		} break;
@@ -311,6 +309,10 @@ static int _dns_server_process_answer_HTTPS(struct dns_rrs *rrs, struct dns_requ
 			}
 		} break;
 		case DNS_HTTPS_T_ECH: {
+			if (no_ech == 1) {
+				break;
+			}
+
 			if (p->len > sizeof(https_svcb->ech)) {
 				tlog(TLOG_WARN, "ech too long");
 				break;
@@ -341,6 +343,8 @@ static int _dns_server_process_answer_HTTPS(struct dns_rrs *rrs, struct dns_requ
 				_dns_server_process_answer_AAAA_IP(request, cname, p->value + k * 16, ttl, result_flag);
 			}
 		} break;
+		default:
+			break;
 		}
 	}
 
@@ -377,28 +381,6 @@ int _dns_server_process_answer(struct dns_request *request, const char *domain, 
 		}
 
 		return DNS_CLIENT_ACTION_UNDEFINE;
-	}
-
-	/* when QTYPE is HTTPS, check if support */
-	if (request->qtype == DNS_T_HTTPS) {
-		int https_svcb_record_num = 0;
-		for (j = 1; j < DNS_RRS_OPT; j++) {
-			rrs = dns_get_rrs_start(packet, j, &rr_count);
-			for (i = 0; i < rr_count && rrs; i++, rrs = dns_get_rrs_next(packet, rrs)) {
-				switch (rrs->type) {
-				case DNS_T_HTTPS: {
-					https_svcb_record_num++;
-					if (https_svcb_record_num <= 1) {
-						continue;
-					}
-
-					/* CURRENT NOT SUPPORT MUTI HTTPS RECORD */
-					*need_passthrouh = 1;
-					return DNS_CLIENT_ACTION_OK;
-				}
-				}
-			}
-		}
 	}
 
 	for (j = 1; j < DNS_RRS_OPT; j++) {
@@ -459,10 +441,6 @@ int _dns_server_process_answer(struct dns_request *request, const char *domain, 
 				}
 				request->rcode = packet->head.rcode;
 				is_rcode_set = 1;
-				if (request->has_ip == 0) {
-					request->passthrough = 1;
-					_dns_server_request_complete(request);
-				}
 			} break;
 			case DNS_T_SOA: {
 				/* if DNS64 enabled, skip check SOA. */
@@ -504,6 +482,11 @@ int _dns_server_process_answer(struct dns_request *request, const char *domain, 
 	request->remote_server_fail = 0;
 	if (request->rcode == DNS_RC_SERVFAIL && is_skip == 0) {
 		request->rcode = packet->head.rcode;
+	}
+
+	/* return NOERROR if all ips are skipped */
+	if (request->rcode == DNS_RC_SERVFAIL && has_result == 1 && is_skip == 1) {
+		request->rcode = DNS_RC_NOERROR;
 	}
 
 	if (has_result == 0 && request->rcode == DNS_RC_NOERROR && packet->head.tc == 1 && request->has_ip == 0 &&

@@ -19,9 +19,11 @@
 #define _GNU_SOURCE
 
 #include "client_tls.h"
+#include "client_http2.h"
 #include "client_quic.h"
 #include "client_socket.h"
 #include "client_tcp.h"
+#include "conn_stream.h"
 #include "server_info.h"
 
 #include "smartdns/lib/stringutil.h"
@@ -60,10 +62,13 @@ static ssize_t _ssl_write_ext2(struct dns_server_info *server, SSL *ssl, const v
 		return SSL_ERROR_SYSCALL;
 	}
 
-#if defined(OSSL_QUIC1_VERSION) && !defined (OPENSSL_NO_QUIC)
+#if defined(OSSL_QUIC1_VERSION) && !defined(OPENSSL_NO_QUIC)
 	ret = SSL_write_ex2(ssl, buff, num, flags, &written);
-#else
+#elif OPENSSL_VERSION_NUMBER >= 0x10101000L
 	ret = SSL_write_ex(ssl, buff, num, &written);
+#else
+	ret = SSL_write(ssl, buff, num);
+	written = ret;
 #endif
 	pthread_mutex_unlock(&server->lock);
 
@@ -129,7 +134,7 @@ int _ssl_do_handevent(struct dns_server_info *server)
 		pthread_mutex_unlock(&server->lock);
 		return SSL_ERROR_SYSCALL;
 	}
-#if defined(OSSL_QUIC1_VERSION) && !defined (OPENSSL_NO_QUIC)
+#if defined(OSSL_QUIC1_VERSION) && !defined(OPENSSL_NO_QUIC)
 	err = SSL_handle_events(server->ssl);
 #else
 	err = SSL_ERROR_SYSCALL;
@@ -376,6 +381,11 @@ int _dns_client_create_socket_tls(struct dns_server_info *server_info, const cha
 		fd = socket(server_info->ai_family, SOCK_STREAM, 0);
 	}
 
+	if (fd < 0) {
+		tlog(TLOG_ERROR, "create socket failed, %s", strerror(errno));
+		goto errout;
+	}
+
 	if (server_info->flags.ifname[0] != '\0') {
 		struct ifreq ifr;
 		memset(&ifr, 0, sizeof(struct ifreq));
@@ -390,11 +400,6 @@ int _dns_client_create_socket_tls(struct dns_server_info *server_info, const cha
 	ssl = SSL_new(server_info->ssl_ctx);
 	if (ssl == NULL) {
 		tlog(TLOG_ERROR, "new ssl failed, %s", server_info->ip);
-		goto errout;
-	}
-
-	if (fd < 0) {
-		tlog(TLOG_ERROR, "create socket failed, %s", strerror(errno));
 		goto errout;
 	}
 
@@ -457,13 +462,13 @@ int _dns_client_create_socket_tls(struct dns_server_info *server_info, const cha
 
 	if (alpn && alpn[0] != 0) {
 		uint8_t alpn_data[DNS_MAX_ALPN_LEN];
-		int32_t alpn_len = strnlen(alpn, DNS_MAX_ALPN_LEN - 1);
-		alpn_data[0] = alpn_len;
-		memcpy(alpn_data + 1, alpn, alpn_len);
-		alpn_len++;
-		if (SSL_set_alpn_protos(ssl, alpn_data, alpn_len)) {
-			tlog(TLOG_INFO, "SSL_set_alpn_protos failed.");
-			goto errout;
+		int alpn_data_len = encode_alpn_protos(alpn, alpn_data, sizeof(alpn_data));
+
+		if (alpn_data_len > 0) {
+			if (SSL_set_alpn_protos(ssl, alpn_data, alpn_data_len)) {
+				tlog(TLOG_INFO, "SSL_set_alpn_protos failed.");
+				goto errout;
+			}
 		}
 	}
 
@@ -482,7 +487,7 @@ int _dns_client_create_socket_tls(struct dns_server_info *server_info, const cha
 	event.events = EPOLLIN | EPOLLOUT;
 	event.data.ptr = server_info;
 	if (epoll_ctl(client.epoll_fd, EPOLL_CTL_ADD, fd, &event) != 0) {
-		tlog(TLOG_ERROR, "epoll ctl failed.");
+		tlog(TLOG_ERROR, "epoll ctl failed, %s", strerror(errno));
 		goto errout;
 	}
 
@@ -499,6 +504,8 @@ errout:
 	}
 
 	server_info->status = DNS_SERVER_STATUS_INIT;
+	server_info->proxy = NULL;
+	server_info->ssl_write_len = -1;
 
 	if (fd > 0 && proxy == NULL) {
 		close(fd);
@@ -561,7 +568,7 @@ int _dns_client_socket_ssl_send_ext(struct dns_server_info *server, SSL *ssl, co
 			return -1;
 		}
 
-		tlog(TLOG_ERROR, "server %s SSL write fail error: %s", server->ip, ERR_error_string(ssl_err, buff));
+		tlog(TLOG_WARN, "server %s SSL write fail error: %s", server->ip, ERR_error_string(ssl_err, buff));
 		errno = EFAULT;
 		ret = -1;
 	} break;
@@ -626,9 +633,11 @@ int _dns_client_socket_ssl_recv_ext(struct dns_server_info *server, SSL *ssl, vo
 		case SSL_R_UNEXPECTED_EOF_WHILE_READING:
 #endif
 			return 0;
+		default:
+			break;
 		}
 
-		tlog(TLOG_ERROR, "server %s SSL read fail error: %s", server->ip, ERR_error_string(ssl_err, buff));
+		tlog(TLOG_WARN, "server %s SSL read fail error: %s", server->ip, ERR_error_string(ssl_err, buff));
 		errno = EFAULT;
 		ret = -1;
 	} break;
@@ -865,6 +874,7 @@ static int _dns_client_tls_verify(struct dns_server_info *server_info)
 	unsigned char *key_sha256 = NULL;
 	char *spki = NULL;
 	int spki_len = 0;
+	int is_secure = 0;
 
 	if (server_info->ssl == NULL) {
 		return -1;
@@ -886,6 +896,8 @@ static int _dns_client_tls_verify(struct dns_server_info *server_info)
 				 X509_verify_cert_error_string(res));
 			goto errout;
 		}
+
+		is_secure = 1;
 	}
 	pthread_mutex_unlock(&server_info->lock);
 
@@ -955,11 +967,19 @@ static int _dns_client_tls_verify(struct dns_server_info *server_info)
 			goto errout;
 		} else {
 			tlog(TLOG_DEBUG, "server %s cert spki verify succeed", server_info->ip);
+			is_secure = 1;
 		}
 	}
 
 	OPENSSL_free(key_data);
 	X509_free(cert);
+
+	if (is_secure) {
+		server_info->security_status = DNS_CLIENT_SERVER_SECURITY_SECURE;
+	} else {
+		server_info->security_status = DNS_CLIENT_SERVER_SECURITY_INSECURE;
+	}
+
 	return 0;
 
 errout:
@@ -970,6 +990,8 @@ errout:
 	if (cert) {
 		X509_free(cert);
 	}
+
+	server_info->security_status = DNS_CLIENT_SERVER_SECURITY_VERIFY_FAILED;
 
 	return -1;
 }
@@ -1033,6 +1055,18 @@ int _dns_client_process_tls(struct dns_server_info *server_info, struct epoll_ev
 			pthread_mutex_unlock(&server_info->lock);
 		}
 
+		/* Detect negotiated ALPN protocol */
+		const unsigned char *alpn_data = NULL;
+		unsigned int alpn_len = 0;
+		SSL_get0_alpn_selected(server_info->ssl, &alpn_data, &alpn_len);
+		if (alpn_data && alpn_len > 0 && alpn_len < sizeof(server_info->alpn_selected)) {
+			memcpy(server_info->alpn_selected, alpn_data, alpn_len);
+			server_info->alpn_selected[alpn_len] = '\0';
+			tlog(TLOG_DEBUG, "ALPN negotiated: %s", server_info->alpn_selected);
+		} else {
+			safe_strncpy(server_info->alpn_selected, "http/1.1", sizeof(server_info->alpn_selected));
+		}
+
 		server_info->status = DNS_SERVER_STATUS_CONNECTED;
 		memset(&fd_event, 0, sizeof(fd_event));
 		fd_event.events = EPOLLIN | EPOLLOUT;
@@ -1049,7 +1083,7 @@ int _dns_client_process_tls(struct dns_server_info *server_info, struct epoll_ev
 
 	if (server_info->type == DNS_SERVER_QUIC || server_info->type == DNS_SERVER_HTTP3) {
 /* QUIC */
-#if defined(OSSL_QUIC1_VERSION) && !defined (OPENSSL_NO_QUIC)
+#if defined(OSSL_QUIC1_VERSION) && !defined(OPENSSL_NO_QUIC)
 		return _dns_client_process_quic(server_info, event, now);
 #else
 		tlog(TLOG_ERROR, "quic/http3 is not supported.");
@@ -1057,13 +1091,22 @@ int _dns_client_process_tls(struct dns_server_info *server_info, struct epoll_ev
 #endif
 	}
 
+	/* Check if HTTPS server negotiated HTTP/2 */
+	if (server_info->type == DNS_SERVER_HTTPS && strncmp(server_info->alpn_selected, "h2", sizeof("h2")) == 0) {
+		/* HTTP/2 processing */
+		if (_dns_client_process_http2(server_info, event, now) != 0) {
+			goto errout;
+		}
+		return 0;
+	}
+
 	return _dns_client_process_tcp(server_info, event, now);
 errout:
 	pthread_mutex_lock(&server_info->lock);
 	server_info->recv_buff.len = 0;
 	server_info->send_buff.len = 0;
-	_dns_client_close_socket(server_info);
 	pthread_mutex_unlock(&server_info->lock);
+	_dns_client_close_socket(server_info);
 
 	return -1;
 }
