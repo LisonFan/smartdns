@@ -26,7 +26,7 @@
 
 static int netlink_neighbor_fd;
 
-int netlink_get_neighbors(int family,
+int netlink_get_neighbors(int family, const uint8_t *target_ip, int target_ip_len,
 						  int (*callback)(const uint8_t *net_addr, int net_addr_len, const uint8_t mac[6], void *arg),
 						  void *arg)
 {
@@ -69,6 +69,14 @@ int netlink_get_neighbors(int family,
 	memset(ndm, 0, sizeof(struct ndmsg));
 	ndm->ndm_family = family;
 
+	if (target_ip_len > 0 && target_ip != NULL) {
+		struct rtattr *rta = (struct rtattr *)(((char *)nlh) + NLMSG_ALIGN(nlh->nlmsg_len));
+		rta->rta_type = NDA_DST;
+		rta->rta_len = RTA_LENGTH(target_ip_len);
+		memcpy(RTA_DATA(rta), target_ip, target_ip_len);
+		nlh->nlmsg_len = NLMSG_ALIGN(nlh->nlmsg_len) + RTA_ALIGN(rta->rta_len);
+	}
+
 	while (1) {
 		if (send_count > 5) {
 			errno = ETIMEDOUT;
@@ -76,7 +84,7 @@ int netlink_get_neighbors(int family,
 		}
 
 		send_count++;
-		if (send(netlink_neighbor_fd, buf, NLMSG_SPACE(sizeof(struct ndmsg)), 0) < 0) {
+		if (send(netlink_neighbor_fd, buf, NLMSG_ALIGN(nlh->nlmsg_len), 0) < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
 				struct timespec waiter;
 				waiter.tv_sec = 0;
